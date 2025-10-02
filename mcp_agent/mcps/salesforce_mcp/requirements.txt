@@ -1,0 +1,25 @@
+# MCP Framework
+mcp>=1.0.0
+# MCP Framework
+mcp>=1.0.0
+
+# Azure SDKs
+azure-identity==1.15.0
+azure-cosmos==4.5.1
+
+# Database drivers
+pyodbc==5.0.1
+gremlinpython==3.7.0
+
+# Utilities
+python-dotenv==1.0.0
+structlog==23.2.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# HTTP
+httpx==0.25.2
+uvicorn[standard]==0.24.0
+
+# JWT handling
+PyJWT==2.8.0

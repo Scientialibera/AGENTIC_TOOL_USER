@@ -1,0 +1,5 @@
+/scaffold.ps1
+/.env
+chatbot/.env
+chatbot/src/chatbot/.env
+NUL
