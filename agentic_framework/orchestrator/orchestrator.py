@@ -20,7 +20,7 @@ from discovery_service import MCPDiscoveryService
 # ============================================================================
 # CONSTANTS
 # ============================================================================
-PROMPT_ID = "orchestrator_system"
+PROMPT_ID = "planner_system"
 DEFAULT_MAX_ROUNDS = 10
 
 logger = structlog.get_logger(__name__)
@@ -205,28 +205,33 @@ class OrchestratorAgent:
             arguments_str = tool_call["function"]["arguments"]
             logger.debug("Raw tool arguments from OpenAI", tool_name=tool_name, arguments_str=arguments_str[:200])
             arguments = json.loads(arguments_str)
-            
+
+            # Keep original LLM arguments for logging
+            llm_arguments = arguments.copy()
+
             arguments["rbac_context"] = rbac_context.to_dict()
             logger.debug("Calling tool with arguments", tool_name=tool_name, arguments_keys=list(arguments.keys()))
-            
+
             mcp_id = await self._find_mcp_for_tool(tool_name, mcps)
-            
+
             if not mcp_id:
                 logger.warning("No MCP found for tool", tool_name=tool_name)
                 results.append({
                     "tool_call_id": tool_call["id"],
                     "tool_name": tool_name,
                     "mcp_id": None,
+                    "arguments": llm_arguments,  # Add LLM arguments
                     "result": {"success": False, "error": "Tool not found"},
                 })
                 continue
-            
+
             try:
                 result = await self._call_mcp_tool(mcp_id, tool_name, arguments, mcps)
                 results.append({
                     "tool_call_id": tool_call["id"],
                     "tool_name": tool_name,
                     "mcp_id": mcp_id,
+                    "arguments": llm_arguments,  # Add LLM arguments
                     "result": result,
                 })
             except Exception as e:
@@ -235,6 +240,7 @@ class OrchestratorAgent:
                     "tool_call_id": tool_call["id"],
                     "tool_name": tool_name,
                     "mcp_id": mcp_id,
+                    "arguments": llm_arguments,  # Add LLM arguments
                     "result": {"success": False, "error": str(e)},
                 })
         

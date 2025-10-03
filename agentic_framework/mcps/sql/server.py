@@ -32,6 +32,7 @@ MCP_SERVER_NAME = "SQL MCP Server"
 MCP_SERVER_PORT = 8001
 PROMPT_ID = "sql_agent_system"
 AGENT_TYPE = "sql"  # Used to match function patterns like sql_*_function
+SQL_SCHEMA_CONTAINER = "sql_schema"  # Container name for SQL schema metadata
 DEFAULT_QUERY_LIMIT = 100
 
 logger = structlog.get_logger(__name__)
@@ -76,9 +77,9 @@ async def get_sql_schema() -> str:
     try:
         if cosmos_client is None:
             await initialize_clients()
-        
+
         items = await cosmos_client.query_items(
-            container_name="sql_schema",
+            container_name=SQL_SCHEMA_CONTAINER,
             query="SELECT * FROM c",
         )
         

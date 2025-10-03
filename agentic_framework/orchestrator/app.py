@@ -201,33 +201,63 @@ async def chat(
                 detail="No messages provided"
             )
         
-        user_query = request.messages[-1].content
+        user_query = request.messages[-1].content if request.messages else ""
         session_id = request.session_id or str(uuid4())
         turn_id = str(uuid4())
-        
+
+        # Handle different request types based on session-centric logic
         conversation_history_from_db = None
+
         if session_id and request.session_id:
+            # Try to get existing session
             try:
-                turns = await app_state.unified_service.get_chat_context(
-                    session_id,
-                    rbac_context,
-                    max_turns=3
+                chat_session = await app_state.unified_service.get_session_history(
+                    session_id=session_id,
+                    user_id=request.user_id
                 )
-                if turns:
+
+                if chat_session and chat_session.turns:
+                    # Convert session turns to conversation history (last 3 turns)
                     conversation_history_from_db = []
-                    for turn in turns[-3:]:
+                    for turn in chat_session.turns[-3:]:
                         if turn.user_message and turn.assistant_message:
                             conversation_history_from_db.append({
-                                "user_message": turn.user_message.content,
-                                "assistant_message": turn.assistant_message.content
+                                "role": "user",
+                                "content": turn.user_message.content
                             })
+                            conversation_history_from_db.append({
+                                "role": "assistant",
+                                "content": turn.assistant_message.content
+                            })
+
+                    logger.debug("Retrieved session history", session_id=session_id, turn_count=len(chat_session.turns))
+
+                    # If no new messages provided, return history
+                    if not request.messages:
+                        return ChatResponse(
+                            session_id=session_id,
+                            response=f"Session history retrieved ({len(chat_session.turns)} turns)",
+                            success=True,
+                            metadata={"history_turns": len(chat_session.turns)}
+                        )
+
+                elif not request.messages:
+                    # No history and no messages - error
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="No history for this session and no further instructions"
+                    )
+
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.warning("Failed to retrieve conversation history", error=str(e))
-        
+
+        # Build conversation history for the orchestrator
         conversation_history = [
             {"role": msg.role, "content": msg.content}
             for msg in request.messages[:-1]
-        ]
+        ] if request.messages and len(request.messages) > 1 else []
         
         result = await app_state.orchestrator.process_request(
             user_query=user_query,
@@ -296,53 +326,98 @@ async def _persist_conversation_turn(
     rbac_context: RBACContext,
     execution_metadata: Dict[str, Any],
 ) -> None:
-    """Persist conversation turn to Cosmos DB."""
-    from shared.unified_service import Message
-    
+    """Persist conversation turn to Cosmos DB using new session-centric model."""
     try:
-        user_msg = Message(
-            id=f"{turn_id}_user",
-            role="user",
-            content=user_message,
-            timestamp=datetime.now(timezone.utc),
-            user_id=rbac_context.user_id
+        # Extract MCP and tool calls from execution_records
+        execution_records = execution_metadata.get("execution_records", [])
+
+        mcp_calls = []
+        tool_calls = []
+
+        for record in execution_records:
+            # Each execution record represents a complete MCP execution flow
+            mcp_id = record.get("mcp_id")
+            tool_name = record.get("tool_name")
+            tool_call_id = record.get("tool_call_id")
+            result = record.get("result", {})
+
+            # Extract LLM arguments if available from the record
+            llm_arguments = record.get("arguments", {})
+
+            # MCP call: What the LLM requested + what MCP returned
+            # This captures any transformations the MCP made
+            mcp_call = {
+                "id": tool_call_id,
+                "mcp_name": mcp_id,
+                "tool_name": tool_name,
+                "llm_request": {
+                    "tool_call_id": tool_call_id,
+                    "function_name": tool_name,
+                    "arguments": llm_arguments  # What the LLM sent to the MCP
+                },
+                "mcp_response": result,  # What the MCP returned (may be transformed from tool output)
+                "timestamp": execution_metadata.get("timestamp")
+            }
+            mcp_calls.append(mcp_call)
+
+            # Tool call: What the tool actually executed
+            # This is what the MCP sent to the underlying tool
+            tool_call = {
+                "id": f"{tool_call_id}_tool",
+                "name": tool_name,
+                "mcp_id": mcp_id,
+                "tool_request": {
+                    # What the MCP sent to the tool (extracted from result if available)
+                    "query": result.get("query") if isinstance(result, dict) else None,
+                    "accounts_mentioned": result.get("resolved_accounts") if isinstance(result, dict) else None,
+                },
+                "tool_response": {
+                    # What the tool actually returned
+                    "success": result.get("success") if isinstance(result, dict) else None,
+                    "data": result.get("data") if isinstance(result, dict) else None,
+                    "row_count": result.get("row_count") if isinstance(result, dict) else None,
+                    "source": result.get("source") if isinstance(result, dict) else None,
+                }
+            }
+            tool_calls.append(tool_call)
+
+        logger.debug(
+            "Extracted calls from execution records",
+            mcp_call_count=len(mcp_calls),
+            tool_call_count=len(tool_calls)
         )
 
-        assistant_msg = Message(
-            id=f"{turn_id}_assistant",
-            role="assistant",
-            content=assistant_response,
-            timestamp=datetime.now(timezone.utc)
+        # Clean up metadata - remove execution_records since it's now in tool_calls
+        clean_metadata = {
+            "turn_id": execution_metadata.get("turn_id"),
+            "rounds": execution_metadata.get("rounds"),
+            "mcps_used": execution_metadata.get("mcps_used", []),
+            "execution_time_ms": execution_metadata.get("execution_time_ms"),
+            "success": execution_metadata.get("success"),
+            "timestamp": execution_metadata.get("timestamp")
+        }
+
+        # Add conversation turn (auto-creates session if doesn't exist)
+        await unified_service.add_conversation_turn(
+            session_id=session_id,
+            user_id=rbac_context.user_id,
+            user_message_content=user_message,
+            assistant_message_content=assistant_response,
+            mcp_calls=mcp_calls,
+            tool_calls=tool_calls,
+            metadata=clean_metadata,
         )
 
-        try:
-            await unified_service.add_conversation_turn(
-                chat_id=session_id,
-                user_message=user_msg,
-                assistant_message=assistant_msg,
-                rbac_context=rbac_context,
-                execution_metadata=execution_metadata,
-            )
-        except ValueError as e:
-            if "Chat session not found" in str(e):
-                logger.info("Creating new chat session", session_id=session_id, user_id=rbac_context.user_id)
-                await unified_service.create_chat_session(
-                    rbac_context=rbac_context,
-                    chat_id=session_id,
-                    title=None,
-                    metadata={}
-                )
-                await unified_service.add_conversation_turn(
-                    chat_id=session_id,
-                    user_message=user_msg,
-                    assistant_message=assistant_msg,
-                    rbac_context=rbac_context,
-                    execution_metadata=execution_metadata,
-                )
-            else:
-                raise
+        logger.info(
+            "Persisted conversation turn",
+            session_id=session_id,
+            turn_id=turn_id,
+            mcp_calls=len(mcp_calls),
+            tool_calls=len(tool_calls)
+        )
+
     except Exception as e:
-        logger.warning("Failed to persist conversation turn", error=str(e))
+        logger.error("Failed to persist conversation turn", error=str(e))
 
 
 @app.get("/mcps")

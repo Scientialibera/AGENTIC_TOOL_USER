@@ -19,13 +19,11 @@ import shutil
 # (e.g. `az login`) with a principal that has permission to create Cosmos DB
 # resources in the target subscription/resource group.
 
-# Add the src directory to Python path
+# Add the agentic_framework directory to Python path
 current_dir = Path(__file__).parent
-# Go up to project root, then into chatbot/src
 project_root = current_dir.parent.parent
-src_dir = project_root / "chatbot" / "src"
-sys.path.insert(0, str(src_dir))
-# Ensure working directory is repository root so .env is discovered by pydantic
+agentic_framework_dir = project_root / "agentic_framework"
+sys.path.insert(0, str(agentic_framework_dir))
 # Ensure working directory is repository root so .env is discovered by pydantic
 os.chdir(project_root)
 
@@ -67,9 +65,9 @@ print('  MOCK_EMBEDDINGS =', os.environ.get('MOCK_EMBEDDINGS'))
 print()
 # ---------------------------------------------------------------
 
-from chatbot.config.settings import settings
-from chatbot.clients.cosmos_client import CosmosDBClient
-from chatbot.clients.gremlin_client import GremlinClient
+from shared.config import get_settings
+from shared.cosmos_client import CosmosDBClient
+from shared.gremlin_client import GremlinClient
 from gremlin_python.driver.protocol import GremlinServerError
 from tenacity import RetryError
 import subprocess
@@ -77,11 +75,15 @@ import platform
 import json
 import time
 
+# Initialize settings
+settings = get_settings()
+
 # Asset paths used by the uploader logic (previously in upload_artifacts.py)
 ASSETS_PROMPTS = project_root / 'scripts' / 'assets' / 'prompts'
 ASSETS_FUNCTIONS = project_root / 'scripts' / 'assets' / 'functions'
 ASSETS_FUNCTIONS_TOOLS = ASSETS_FUNCTIONS / 'tools'
 ASSETS_FUNCTIONS_AGENTS = ASSETS_FUNCTIONS / 'agents'
+ASSETS_SCHEMA = project_root / 'scripts' / 'assets' / 'schema'
 
 
 class DataInitializer:
@@ -89,7 +91,7 @@ class DataInitializer:
     
     def __init__(self):
         """Initialize the data initializer with Azure clients."""
-        self.cosmos_client = CosmosDBClient(settings.cosmos_db)
+        self.cosmos_client = CosmosDBClient(settings.cosmos)
         self.gremlin_client = GremlinClient(settings.gremlin)
         
     async def initialize_all(self):
@@ -112,13 +114,13 @@ class DataInitializer:
             try:
                 # Use asyncio.to_thread to run the blocking CLI work in a
                 # thread so we don't block the event loop.
-                sql_endpoint = getattr(settings.cosmos_db, 'endpoint', None)
+                sql_endpoint = getattr(settings.cosmos, 'endpoint', None)
                 # Prefer explicit env var for gremlin endpoint; fall back to
                 # settings.gremlin.endpoint when available (avoid passing the
                 # settings.gremlin object itself).
                 gremlin_endpoint = os.environ.get('AZURE_COSMOS_GREMLIN_ENDPOINT') or (getattr(settings, 'gremlin', None) and getattr(settings.gremlin, 'endpoint', None))
                 # Extract account/db names used elsewhere in the script
-                sql_db = getattr(settings.cosmos_db, 'database_name', None)
+                sql_db = getattr(settings.cosmos, 'database_name', None)
                 gremlin_db = os.environ.get('AZURE_COSMOS_GREMLIN_DATABASE') or getattr(settings.gremlin, 'database', None) or getattr(settings.gremlin, 'database_name', None)
                 from asyncio import to_thread
                 await to_thread(self._ensure_role_assignments_sync, sql_endpoint, sql_db, gremlin_endpoint, gremlin_db)
@@ -391,38 +393,27 @@ class DataInitializer:
         print(" Uploading prompts and functions via repository uploader...")
         # Essential containers for simplified architecture
         containers = [
-            settings.cosmos_db.chat_container,        # Unified session/message/feedback storage
-            settings.cosmos_db.prompts_container,     # System prompts
-            settings.cosmos_db.agent_functions_container,  # Function definitions
-            settings.cosmos_db.sql_schema_container,  # Schema metadata
+            settings.cosmos.chat_container,        # Unified session/message/feedback storage
+            settings.cosmos.prompts_container,     # System prompts
+            settings.cosmos.agent_functions_container,  # Function definitions
+            "sql_schema",  # Schema metadata (hardcoded for now)
         ]
 
         # Provision Cosmos resources using az CLI (best-effort)
         try:
-            self._provision_cosmos_via_az(settings.cosmos_db.endpoint, settings.cosmos_db.database_name, containers)
+            self._provision_cosmos_via_az(settings.cosmos.endpoint, settings.cosmos.database_name, containers)
         except Exception as e:
             print(f"   Provisioning step failed or skipped: {e}")
 
-        # Run uploader logic: upload prompts and functions from scripts/assets
+        # Run uploader logic: upload prompts, functions, and schema from scripts/assets
         try:
-            # instantiate repo classes
-            from chatbot.repositories.prompts_repository import PromptsRepository
-            from chatbot.repositories.agent_functions_repository import AgentFunctionsRepository
-
-            prompts_repo = PromptsRepository(self.cosmos_client, settings.cosmos_db.database_name, settings.cosmos_db.prompts_container)
-            functions_repo = AgentFunctionsRepository(self.cosmos_client, settings.cosmos_db.database_name, settings.cosmos_db.agent_functions_container)
-
-            await self._uploader_upload_prompts(prompts_repo)
-            await self._uploader_upload_functions(functions_repo)
-            print("   Uploader completed prompts and functions upload.")
-            return
+            await self._uploader_upload_prompts()
+            await self._uploader_upload_functions()
+            await self._uploader_upload_schema()
+            print("   Uploader completed prompts, functions, and schema upload.")
         except Exception as e:
             print(f"   Uploader failed during upload steps: {e}")
-            print("   Falling back to built-in upload implementations.")
-
-        # Fallback behavior  should rarely be needed now
-        await self.upload_prompts()
-        await self.upload_functions()
+            raise
 
     def _provision_cosmos_via_az(self, endpoint: str, database: str, containers: list, resource_group: str | None = None):
         """Best-effort: use Azure CLI to create database and containers using AAD credentials.
@@ -498,8 +489,8 @@ class DataInitializer:
             else:
                 print(f"       Created container '{c}'.")
 
-    async def _uploader_upload_prompts(self, prompts_repo):
-        """Upload prompts from `scripts/assets/prompts` (mirror of upload_artifacts.upload_prompts)."""
+    async def _uploader_upload_prompts(self):
+        """Upload prompts from `scripts/assets/prompts`."""
         print('Uploading prompts from assets...')
         if not ASSETS_PROMPTS.exists():
             print('   No prompts assets directory found at', ASSETS_PROMPTS)
@@ -514,23 +505,30 @@ class DataInitializer:
                 # If JSON, parse and upload as object; if MD, upload as system prompt
                 if fname.endswith('.json'):
                     data = json.loads(content)
-                    await prompts_repo.delete_prompt(data.get('id', ''))
-                    await prompts_repo.save_prompt(prompt_id=data.get('id'), agent_name=data.get('agent_name') or data.get('id'), prompt_type=data.get('type') or 'system', content=json.dumps(data))
+                    await self.cosmos_client.upsert_item(
+                        container_name=settings.cosmos.prompts_container,
+                        item=data
+                    )
                     print('   Uploaded prompt (json):', fname)
                 else:
+                    # MD file - create a prompt document
                     agent_name = Path(fname).stem
-                    prompt_id = f'{agent_name}'
-                    try:
-                        await prompts_repo.delete_prompt(prompt_id)
-                    except Exception:
-                        pass
-                    await prompts_repo.save_prompt(prompt_id=prompt_id, agent_name=agent_name, prompt_type='system', content=content)
+                    prompt_doc = {
+                        'id': agent_name,
+                        'agent_name': agent_name,
+                        'type': 'system',
+                        'content': content
+                    }
+                    await self.cosmos_client.upsert_item(
+                        container_name=settings.cosmos.prompts_container,
+                        item=prompt_doc
+                    )
                     print('   Uploaded prompt (md):', fname)
             except Exception as e:
                 print('   Failed to upload prompt', fname, 'error:', e)
 
-    async def _uploader_upload_functions(self, functions_repo):
-        """Upload function/tool/agent definitions from `scripts/assets/functions` (one JSON = one function/agent)."""
+    async def _uploader_upload_functions(self):
+        """Upload function/tool/agent definitions from `scripts/assets/functions`."""
         print('Uploading function definitions from assets...')
         # Tools
         if ASSETS_FUNCTIONS_TOOLS.exists():
@@ -541,19 +539,20 @@ class DataInitializer:
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
-                    name = data.get('name')
-                    if not name:
-                        print(f'   Tool file {fname} missing "name" field, skipping')
+
+                    # Ensure the document has an 'id' field
+                    if 'id' not in data and 'name' in data:
+                        data['id'] = data['name']
+
+                    if not data.get('id'):
+                        print(f'   Tool file {fname} missing "id" or "name" field, skipping')
                         continue
-                    from chatbot.models.result import ToolDefinition
-                    td = ToolDefinition(name=name, description=data.get('description', ''), parameters=data.get('parameters', {}), metadata=data.get('metadata', {}))
-                    try:
-                        await functions_repo.delete_function_definition(name)
-                    except Exception:
-                        pass
-                    agents = data.get('agents') or data.get('metadata', {}).get('agents') or ['sql_agent', 'graph_agent']
-                    await functions_repo.save_function_definition(td, agents=agents)
-                    print('   Uploaded tool function', name, 'agents=', agents)
+
+                    await self.cosmos_client.upsert_item(
+                        container_name=settings.cosmos.agent_functions_container,
+                        item=data
+                    )
+                    print('   Uploaded tool function:', data['id'])
                 except Exception as e:
                     print('   Failed to upload tool file', fname, 'error:', e)
 
@@ -566,22 +565,59 @@ class DataInitializer:
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
-                    agent_id = data.get('id') or data.get('name')
-                    if not agent_id:
+
+                    # Ensure the document has an 'id' field
+                    if 'id' not in data and 'name' in data:
+                        data['id'] = data['name']
+
+                    if not data.get('id'):
                         print(f'   Agent file {fname} missing "id" or "name" field, skipping')
                         continue
-                    from chatbot.models.result import ToolDefinition
-                    td = ToolDefinition(name=agent_id, description=data.get('description', ''), parameters=data.get('parameters', {}), metadata=data.get('metadata', {}))
-                    try:
-                        await functions_repo.delete_function_definition(agent_id)
-                    except Exception:
-                        pass
-                    agents_list = data.get('agents') or [data.get('name')]
-                    await functions_repo.save_function_definition(td, agents=agents_list)
-                    print('   Uploaded agent registration', agent_id, 'agents=', agents_list)
+
+                    await self.cosmos_client.upsert_item(
+                        container_name=settings.cosmos.agent_functions_container,
+                        item=data
+                    )
+                    print('   Uploaded agent registration:', data['id'])
                 except Exception as e:
                     print('   Failed to upload agent file', fname, 'error:', e)
-    
+
+    async def _uploader_upload_schema(self):
+        """Upload SQL schema definitions from `scripts/assets/schema`."""
+        print('Uploading SQL schema definitions from assets...')
+        if not ASSETS_SCHEMA.exists():
+            print('   No schema assets directory found at', ASSETS_SCHEMA)
+            return
+
+        for fname in os.listdir(ASSETS_SCHEMA):
+            if not str(fname).endswith('.json'):
+                continue
+            path = ASSETS_SCHEMA / fname
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    schema_data = json.load(f)
+
+                # schema_data should be an array of table definitions
+                if not isinstance(schema_data, list):
+                    print(f'   Schema file {fname} is not a JSON array, skipping')
+                    continue
+
+                # Upload each table definition to sql_schema container
+                for table_def in schema_data:
+                    table_id = table_def.get('id')
+                    if not table_id:
+                        print(f'   Table definition in {fname} missing "id" field, skipping')
+                        continue
+
+                    await self.cosmos_client.upsert_item(
+                        container_name="sql_schema",
+                        item=table_def
+                    )
+                    print(f'   Uploaded schema for table: {table_def.get("table_name", table_id)}')
+
+            except Exception as e:
+                print('   Failed to upload schema file', fname, 'error:', e)
+
     async def upload_dummy_graph_data(self):
         """Upload dummy account and relationship data to Gremlin graph."""
         print("  Uploading dummy graph data...")
@@ -861,26 +897,28 @@ class DataInitializer:
             print("  CONTAINER_APP_RESOURCE_GROUP not set in environment; skipping Cosmos container provisioning.")
             return
 
-        cos_end = settings.cosmos_db.endpoint
+        cos_end = settings.cosmos.endpoint
         if not cos_end:
             print("  COSMOS_ENDPOINT not configured in settings; skipping container creation.")
             return
 
         # Extract account name from endpoint (https://{account}.documents.azure.com)
         acct = cos_end.replace('https://', '').split('.')[0]
-        db_name = settings.cosmos_db.database_name
+        db_name = settings.cosmos.database_name
         # Essential containers for unified Cosmos DB storage
         container_fields = [
             'chat_container',  # Unified container for sessions, messages, cache, feedback
             'agent_functions_container',  # Agent and tool function definitions
             'prompts_container',  # System prompts
-            'sql_schema_container',  # Database schema information
         ]
         containers = []
         for f in container_fields:
-            val = getattr(settings.cosmos_db, f, None)
+            val = getattr(settings.cosmos, f, None)
             if val:
                 containers.append(val)
+
+        # Add sql_schema container
+        containers.append("sql_schema")
 
         if not acct or not db_name or not containers:
             print("  Insufficient Cosmos settings to create container; skipping.")

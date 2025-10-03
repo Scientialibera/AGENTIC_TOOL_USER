@@ -79,25 +79,222 @@ class CosmosDBClient:
         """Query items from a container."""
         try:
             container = await self.get_container(container_name)
-            
+
             items = []
             async for item in container.query_items(
                 query=query,
                 parameters=parameters or [],
             ):
                 items.append(item)
-            
+
             logger.debug(
                 "Queried items",
                 container=container_name,
                 result_count=len(items),
             )
             return items
-            
+
         except Exception as e:
             logger.error(
                 "Failed to query items",
                 container=container_name,
+                error=str(e),
+            )
+            raise
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((exceptions.CosmosHttpResponseError,)),
+    )
+    async def read_item(
+        self,
+        container_name: str,
+        item_id: str,
+        partition_key: Optional[str] = None,
+        partition_key_value: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Read a single item from a container."""
+        try:
+            container = await self.get_container(container_name)
+
+            # Use partition_key_value if provided, otherwise partition_key, otherwise item_id
+            pk = partition_key_value or partition_key or item_id
+
+            item = await container.read_item(
+                item=item_id,
+                partition_key=pk,
+            )
+
+            logger.debug(
+                "Read item",
+                container=container_name,
+                item_id=item_id,
+            )
+            return item
+
+        except exceptions.CosmosResourceNotFoundError:
+            logger.debug(
+                "Item not found",
+                container=container_name,
+                item_id=item_id,
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                "Failed to read item",
+                container=container_name,
+                item_id=item_id,
+                error=str(e),
+            )
+            raise
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((exceptions.CosmosHttpResponseError,)),
+    )
+    async def create_item(
+        self,
+        container_name: str,
+        item: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Create a new item in a container."""
+        try:
+            container = await self.get_container(container_name)
+
+            result = await container.create_item(body=item)
+
+            logger.debug(
+                "Created item",
+                container=container_name,
+                item_id=item.get("id"),
+            )
+            return result
+
+        except Exception as e:
+            logger.error(
+                "Failed to create item",
+                container=container_name,
+                item_id=item.get("id"),
+                error=str(e),
+            )
+            raise
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((exceptions.CosmosHttpResponseError,)),
+    )
+    async def upsert_item(
+        self,
+        container_name: str,
+        item: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Insert or update an item in a container."""
+        try:
+            container = await self.get_container(container_name)
+
+            result = await container.upsert_item(body=item)
+
+            logger.debug(
+                "Upserted item",
+                container=container_name,
+                item_id=item.get("id"),
+            )
+            return result
+
+        except Exception as e:
+            logger.error(
+                "Failed to upsert item",
+                container=container_name,
+                item_id=item.get("id"),
+                error=str(e),
+            )
+            raise
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((exceptions.CosmosHttpResponseError,)),
+    )
+    async def replace_item(
+        self,
+        container_name: str,
+        item_id: str,
+        item: Dict[str, Any],
+        partition_key: Optional[str] = None,
+        partition_key_value: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Replace an existing item in a container."""
+        try:
+            container = await self.get_container(container_name)
+
+            # The replace_item in Azure Cosmos SDK doesn't accept partition_key parameter
+            # It infers the partition key from the item body
+            # Just ensure the item has the correct partition key value in its fields
+            result = await container.replace_item(
+                item=item_id,
+                body=item,
+            )
+
+            logger.debug(
+                "Replaced item",
+                container=container_name,
+                item_id=item_id,
+            )
+            return result
+
+        except Exception as e:
+            logger.error(
+                "Failed to replace item",
+                container=container_name,
+                item_id=item_id,
+                error=str(e),
+            )
+            raise
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((exceptions.CosmosHttpResponseError,)),
+    )
+    async def delete_item(
+        self,
+        container_name: str,
+        item_id: str,
+        partition_key: Optional[str] = None,
+        partition_key_value: Optional[str] = None,
+    ) -> None:
+        """Delete an item from a container."""
+        try:
+            container = await self.get_container(container_name)
+
+            # Use partition_key_value if provided, otherwise partition_key, otherwise item_id
+            pk = partition_key_value or partition_key or item_id
+
+            await container.delete_item(
+                item=item_id,
+                partition_key=pk,
+            )
+
+            logger.debug(
+                "Deleted item",
+                container=container_name,
+                item_id=item_id,
+            )
+
+        except exceptions.CosmosResourceNotFoundError:
+            logger.debug(
+                "Item not found (already deleted)",
+                container=container_name,
+                item_id=item_id,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to delete item",
+                container=container_name,
+                item_id=item_id,
                 error=str(e),
             )
             raise
