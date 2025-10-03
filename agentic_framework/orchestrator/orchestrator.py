@@ -202,9 +202,12 @@ class OrchestratorAgent:
         
         for tool_call in tool_calls:
             tool_name = tool_call["function"]["name"]
-            arguments = json.loads(tool_call["function"]["arguments"])
+            arguments_str = tool_call["function"]["arguments"]
+            logger.debug("Raw tool arguments from OpenAI", tool_name=tool_name, arguments_str=arguments_str[:200])
+            arguments = json.loads(arguments_str)
             
             arguments["rbac_context"] = rbac_context.to_dict()
+            logger.debug("Calling tool with arguments", tool_name=tool_name, arguments_keys=list(arguments.keys()))
             
             mcp_id = await self._find_mcp_for_tool(tool_name, mcps)
             

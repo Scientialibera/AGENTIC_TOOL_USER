@@ -38,7 +38,7 @@ class AzureOpenAISettings(BaseSettings):
             v = v.replace(".cognitiveservices.azure.com", ".openai.azure.com")
         return v
     
-    api_version: str = Field(default="2024-02-15-preview", description="API version")
+    api_version: str = Field(default="2024-08-01-preview", description="API version")
     chat_deployment: str = Field(..., description="Chat completion deployment name")
     embedding_deployment: str = Field(..., description="Text embedding deployment name")
     max_tokens: int = Field(default=4000, description="Maximum tokens for completions")

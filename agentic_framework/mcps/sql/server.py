@@ -31,6 +31,7 @@ from shared.auth_provider import create_auth_provider
 MCP_SERVER_NAME = "SQL MCP Server"
 MCP_SERVER_PORT = 8001
 PROMPT_ID = "sql_agent_system"
+AGENT_TYPE = "sql"  # Used to match function patterns like sql_*_function
 DEFAULT_QUERY_LIMIT = 100
 
 logger = structlog.get_logger(__name__)
@@ -128,6 +129,47 @@ async def get_system_prompt(rbac_context: Optional[Dict[str, Any]] = None) -> st
     return prompt
 
 
+async def load_agent_tools() -> List[Dict[str, Any]]:
+    """
+    Load all tool definitions for this agent type from Cosmos DB.
+    
+    Returns:
+        List of tool definitions in OpenAI function format
+        
+    Raises:
+        Exception: If no tools found for this agent type
+    """
+    if cosmos_client is None:
+        await initialize_clients()
+    
+    # Load all tool definitions for this agent type from Cosmos DB
+    # Pattern: {agent_type}_*_function (e.g., sql_query_function, sql_analysis_function)
+    tool_items = await cosmos_client.query_items(
+        container_name=settings.cosmos.agent_functions_container,
+        query=f"SELECT * FROM c WHERE STARTSWITH(c.id, @prefix) AND ENDSWITH(c.id, '_function')",
+        parameters=[{"name": "@prefix", "value": f"{AGENT_TYPE}_"}],
+    )
+    
+    if not tool_items:
+        raise Exception(f"No tool definitions found for agent type '{AGENT_TYPE}' in Cosmos DB")
+    
+    tools = []
+    for tool_def in tool_items:
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": tool_def.get("name"),
+                "description": tool_def.get("description"),
+                "parameters": tool_def.get("parameters"),
+            }
+        })
+    
+    logger.info(f"Loaded {len(tools)} tool(s) for agent type '{AGENT_TYPE}'", 
+               tool_names=[t["function"]["name"] for t in tools])
+    
+    return tools
+
+
 async def resolve_accounts(
     account_names: List[str],
     rbac_context: Optional[Dict[str, Any]] = None
@@ -207,15 +249,45 @@ async def sql_query(
             {"role": "user", "content": user_message},
         ]
         
-        response = await aoai_client.create_chat_completion(messages=messages)
+        # Load tool definitions for this agent
+        tools = await load_agent_tools()
         
-        assistant_content = response["choices"][0]["message"]["content"]
+        logger.debug("LLM request",
+                    messages=json.dumps(messages, indent=2),
+                    tools=json.dumps(tools, indent=2))
         
-        sql_query = assistant_content.strip()
-        if "```sql" in sql_query:
-            sql_query = sql_query.split("```sql")[1].split("```")[0].strip()
-        elif "```" in sql_query:
-            sql_query = sql_query.split("```")[1].split("```")[0].strip()
+        response = await aoai_client.create_chat_completion(
+            messages=messages,
+            tools=tools,
+            tool_choice="required"
+        )
+        
+        logger.debug("LLM raw response", response=json.dumps(response, indent=2, default=str))
+        
+        # Extract function/tool call from response
+        assistant_message = response["choices"][0]["message"]
+        
+        # Check for tool_calls (new style) or function_call (legacy)
+        function_call = None
+        if assistant_message.get("tool_calls"):
+            tool_call = assistant_message["tool_calls"][0]
+            function_call = tool_call.get("function")
+            logger.info("Found tool_call in response", function_name=function_call.get("name"))
+        elif assistant_message.get("function_call"):
+            function_call = assistant_message["function_call"]
+            logger.info("Found function_call in response", function_name=function_call.get("name"))
+        else:
+            logger.error("NO FUNCTION CALL FOUND IN RESPONSE!", 
+                        message_keys=list(assistant_message.keys()),
+                        content_preview=str(assistant_message.get("content", ""))[:200])
+            raise Exception("LLM did not return a function call - check system prompt configuration")
+        
+        # Parse the function arguments to get the SQL query
+        args_str = function_call.get("arguments", "{}")
+        args = json.loads(args_str)
+        sql_query = args.get("query", "")
+        
+        logger.info("Extracted SQL query", query_preview=sql_query[:100])
         
         if settings.dev_mode:
             results = _get_dummy_sql_data(sql_query, limit)
