@@ -334,7 +334,7 @@ async def _persist_conversation_turn(
         mcp_calls = []
         tool_calls = []
 
-        for record in execution_records:
+        for idx, record in enumerate(execution_records):
             # Each execution record represents a complete MCP execution flow
             mcp_id = record.get("mcp_id")
             tool_name = record.get("tool_name")
@@ -344,10 +344,14 @@ async def _persist_conversation_turn(
             # Extract LLM arguments if available from the record
             llm_arguments = record.get("arguments", {})
 
+            # Determine execution order: sequential index
+            execution_sequence = idx + 1
+
             # MCP call: What the LLM requested + what MCP returned
             # This captures any transformations the MCP made
             mcp_call = {
                 "id": tool_call_id,
+                "sequence": execution_sequence,  # Order of execution (1, 2, 3...)
                 "mcp_name": mcp_id,
                 "tool_name": tool_name,
                 "llm_request": {
@@ -364,6 +368,7 @@ async def _persist_conversation_turn(
             # This is what the MCP sent to the underlying tool
             tool_call = {
                 "id": f"{tool_call_id}_tool",
+                "sequence": execution_sequence,  # Same sequence as MCP call
                 "name": tool_name,
                 "mcp_id": mcp_id,
                 "tool_request": {

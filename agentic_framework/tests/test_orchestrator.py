@@ -128,7 +128,7 @@ async def test_graph_query_through_orchestrator():
     print("="*70)
     
     async with httpx.AsyncClient() as client:
-        user_query = "Show me accounts who have SOWs of type 'ai_chatbot'"
+        user_query = "Show me accounts who have SOWs of type 'ai_chatbot' and hen get their email contacts from SQL"
         request_data = {
             "messages": [
                 {
