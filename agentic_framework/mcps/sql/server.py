@@ -211,7 +211,8 @@ async def sql_query(
     query: str,
     accounts_mentioned: Optional[List[str]] = None,
     rbac_context: Optional[Dict[str, Any]] = None,
-    limit: int = DEFAULT_QUERY_LIMIT
+    limit: int = DEFAULT_QUERY_LIMIT,
+    request: Optional[Any] = None
 ) -> Dict[str, Any]:
     """
     Execute SQL queries against Salesforce/Fabric data.
@@ -224,10 +225,26 @@ async def sql_query(
         accounts_mentioned: List of account names mentioned in query
         rbac_context: User RBAC context for row-level security
         limit: Maximum number of rows to return
+        request: FastAPI Request object (injected by FastMCP)
     
     Returns:
         Dictionary with query results, including success status, data, and metadata
     """
+    # Verify JWT token from request
+    from shared.auth_provider import verify_token_from_request
+    if request:
+        try:
+            await verify_token_from_request(request)
+            logger.debug("SQL MCP request authenticated")
+        except Exception as e:
+            logger.error("SQL MCP authentication failed", error=str(e))
+            return {
+                "success": False,
+                "error": f"Authentication failed: {str(e)}",
+                "data": []
+            }
+    else:
+        logger.warning("No request object provided - skipping authentication")
     try:
         await initialize_clients()
         

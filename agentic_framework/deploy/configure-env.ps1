@@ -49,7 +49,7 @@ $CommonEnvVars = @(
 # Orchestrator-specific variables
 $OrchestratorEnvVars = $CommonEnvVars + @(
     "APP_NAME=orchestrator",
-    "LIST_OF_MCPS=sql_mcp,graph_mcp",
+    MCP_ENDPOINTS={"sql_mcp": "http://localhost:8001/mcp", "graph_mcp": "http://localhost:8002/mcp"},
     "COSMOS_MCP_DEFINITIONS_CONTAINER=mcp_definitions",
     "COSMOS_AGENT_FUNCTIONS_CONTAINER=agent_functions",
     "COSMOS_PROMPTS_CONTAINER=prompts",

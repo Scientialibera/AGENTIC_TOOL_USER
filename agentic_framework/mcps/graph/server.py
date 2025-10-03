@@ -187,7 +187,8 @@ async def graph_query(
     max_depth: int = 3,
     bindings: Optional[Dict[str, Any]] = None,
     format: str = DEFAULT_OUTPUT_FORMAT,
-    edge_labels: Optional[List[str]] = None
+    edge_labels: Optional[List[str]] = None,
+    request: Optional[Any] = None
 ) -> Dict[str, Any]:
     """
     Execute graph queries against knowledge graph.
@@ -203,10 +204,27 @@ async def graph_query(
         bindings: Optional variable bindings for the generated Gremlin query
         format: Output format (default, project, vertices, edges)
         edge_labels: Filter by specific edge labels in traversal
+        request: FastAPI Request object (injected by FastMCP)
     
     Returns:
         Dictionary with query results, including success status, data, and metadata
     """
+    # Verify JWT token from request
+    from shared.auth_provider import verify_token_from_request
+    if request:
+        try:
+            await verify_token_from_request(request)
+            logger.debug("Graph MCP request authenticated")
+        except Exception as e:
+            logger.error("Graph MCP authentication failed", error=str(e))
+            return {
+                "success": False,
+                "error": f"Authentication failed: {str(e)}",
+                "data": []
+            }
+    else:
+        logger.warning("No request object provided - skipping authentication")
+    
     try:
         await initialize_clients()
         

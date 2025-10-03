@@ -25,6 +25,7 @@ from shared.models import RBACContext, AccessScope
 from shared.aoai_client import AzureOpenAIClient
 from shared.cosmos_client import CosmosDBClient
 from shared.unified_service import UnifiedDataService
+from shared.auth_provider import verify_token
 from discovery_service import MCPDiscoveryService
 from orchestrator import OrchestratorAgent
 
@@ -158,7 +159,7 @@ async def get_rbac_context() -> RBACContext:
 
 
 @app.get("/health")
-async def health_check():
+async def health_check(token_payload: dict = Depends(verify_token)):
     """Health check endpoint."""
     return {
         "status": "healthy",
@@ -170,6 +171,7 @@ async def health_check():
 @app.post("/chat", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
+    token_payload: dict = Depends(verify_token),
     rbac_context: RBACContext = Depends(get_rbac_context),
 ) -> ChatResponse:
     """
@@ -427,6 +429,7 @@ async def _persist_conversation_turn(
 
 @app.get("/mcps")
 async def list_mcps(
+    token_payload: dict = Depends(verify_token),
     rbac_context: RBACContext = Depends(get_rbac_context),
 ):
     """List available MCPs for the current user."""
@@ -448,6 +451,7 @@ async def list_mcps(
 @app.get("/tools")
 async def list_tools(
     mcp_id: Optional[str] = None,
+    token_payload: dict = Depends(verify_token),
     rbac_context: RBACContext = Depends(get_rbac_context),
 ):
     """List available tools, optionally filtered by MCP."""
@@ -471,6 +475,7 @@ async def list_tools(
 
 @app.get("/sessions")
 async def list_sessions(
+    token_payload: dict = Depends(verify_token),
     rbac_context: RBACContext = Depends(get_rbac_context),
     limit: int = 50,
     offset: int = 0,
@@ -507,6 +512,7 @@ async def list_sessions(
 @app.get("/sessions/{session_id}")
 async def get_session(
     session_id: str,
+    token_payload: dict = Depends(verify_token),
     rbac_context: RBACContext = Depends(get_rbac_context),
     max_turns: int = 50,
 ):
@@ -576,6 +582,7 @@ class FeedbackRequest(BaseModel):
 @app.post("/feedback")
 async def submit_feedback(
     feedback: FeedbackRequest,
+    token_payload: dict = Depends(verify_token),
     rbac_context: RBACContext = Depends(get_rbac_context),
 ):
     """Submit feedback for a conversation turn."""

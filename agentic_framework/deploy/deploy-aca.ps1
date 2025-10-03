@@ -204,7 +204,7 @@ az containerapp create `
         "APP_NAME=orchestrator" `
         "DEV_MODE=false" `
         "DEBUG=false" `
-        "LIST_OF_MCPS=sql_mcp,graph_mcp" 2>$null
+        MCP_ENDPOINTS={"sql_mcp": "http://localhost:8001/mcp", "graph_mcp": "http://localhost:8002/mcp"} 2>$null
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Updating existing Orchestrator app..." -ForegroundColor Yellow

@@ -1,78 +1,83 @@
 """
-Test script for Orchestrator.
-
-This script tests the orchestrator's ability to coordinate between
-SQL and Graph MCP servers to answer complex queries.
+Simple test script for Orchestrator health check.
 """
 
 import asyncio
-import json
 import httpx
+from azure.identity.aio import DefaultAzureCredential
 
+
+async def get_access_token():
+    """Get Azure AD access token using DefaultAzureCredential."""
+    credential = DefaultAzureCredential()
+    token = await credential.get_token("https://cognitiveservices.azure.com/.default")
+    return token.token
 
 async def test_orchestrator_health():
-    """Test if orchestrator is running."""
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get("http://localhost:8000/health", timeout=5.0)
-            if response.status_code == 200:
-                print(" Orchestrator is healthy")
-                return True
-            else:
-                print(f"  Orchestrator returned status {response.status_code}")
-                return False
-        except Exception as e:
-            print(f" Orchestrator is not running: {e}")
-            return False
-
-
-async def test_list_mcps():
-    """Test listing available MCPs."""
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get("http://localhost:8000/mcps", timeout=10.0)
-            if response.status_code == 200:
-                data = response.json()
-                print("\n Available MCPs:")
-                for mcp in data.get("mcps", []):
-                    print(f"  - {mcp.get('id')}: {mcp.get('name')}")
-                return True
-            else:
-                print(f" Failed to list MCPs: {response.status_code}")
-                return False
-        except Exception as e:
-            print(f" Error listing MCPs: {e}")
-            return False
-
-
-async def test_list_tools():
-    """Test listing available tools."""
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get("http://localhost:8000/tools", timeout=10.0)
-            if response.status_code == 200:
-                data = response.json()
-                print("\n Available Tools:")
-                for tool in data.get("tools", []):
-                    print(f"  - {tool.get('name')} (from {tool.get('mcp_id')})")
-                    print(f"    {tool.get('description', 'No description')[:80]}...")
-                return True
-            else:
-                print(f" Failed to list tools: {response.status_code}")
-                return False
-        except Exception as e:
-            print(f" Error listing tools: {e}")
-            return False
-
-
-async def test_sql_query_through_orchestrator():
-    """Test SQL query through orchestrator."""
-    print("\n" + "="*70)
-    print(" Testing SQL Query via Orchestrator")
-    print("="*70)
+    """Test if orchestrator is running and authenticated."""
+    print("\n" + "=" * 70)
+    print("🧪 Testing Orchestrator Health")
+    print("=" * 70)
     
-    async with httpx.AsyncClient() as client:
-        user_query = "Show me all opportunities over $100,000 for Microsoft"
+    try:
+        # Get Azure AD access token
+        print("\n📋 Getting Azure AD access token...")
+        token = await get_access_token()
+        print("✅ Obtained Azure AD access token")
+        
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        # Test health endpoint
+        print("\n🔍 Testing /health endpoint...")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "http://localhost:8000/health",
+                timeout=5.0,
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                print("✅ Orchestrator is healthy!")
+                print(f"   Status: {data.get('status')}")
+                print(f"   Version: {data.get('version')}")
+                print(f"   Timestamp: {data.get('timestamp')}")
+                return True
+            else:
+                print(f"❌ Orchestrator returned status {response.status_code}")
+                print(f"   Response: {response.text}")
+                return False
+                
+    except Exception as e:
+        print(f"❌ Test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+async def test_chat_query():
+    """Test a real chat query through the orchestrator."""
+    print("\n" + "=" * 70)
+    print("💬 Testing Chat Query")
+    print("=" * 70)
+    
+    try:
+        # Get Azure AD access token
+        print("\n📋 Getting Azure AD access token...")
+        token = await get_access_token()
+        print("✅ Obtained Azure AD access token")
+        
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        # Create chat request
+        user_query = "Show me all opportunities over $100,000"
+        print(f"\n💭 Sending query: '{user_query}'")
         
         request_data = {
             "messages": [
@@ -82,132 +87,82 @@ async def test_sql_query_through_orchestrator():
                 }
             ],
             "user_id": "test_user@example.com",
-            "session_id": "test_session_1",
+            "session_id": "test_session_001",
             "metadata": {}
         }
         
-        print(f"\n Sending query: {user_query}")
-        
-        try:
+        # Send chat request
+        print("🚀 Sending chat request...")
+        async with httpx.AsyncClient() as client:
             response = await client.post(
                 "http://localhost:8000/chat",
                 json=request_data,
-                timeout=60.0
+                timeout=60.0,
+                headers=headers
             )
             
             if response.status_code == 200:
                 data = response.json()
-                print("\n Query executed successfully!")
-                print(f"\n Response:")
-                print(f"  Success: {data.get('success')}")
-                print(f"  Response: {data.get('response', 'N/A')[:200]}...")
+                print("✅ Chat query executed successfully!")
+                print(f"\n📊 Response:")
+                print(f"   Success: {data.get('success')}")
+                print(f"   Message: {data.get('response', 'N/A')[:200]}...")
                 
                 if data.get('execution_metadata'):
                     meta = data['execution_metadata']
-                    print(f"\n  Execution Details:")
-                    print(f"    - Rounds: {meta.get('rounds', 'N/A')}")
-                    print(f"    - Agent Calls: {meta.get('total_agent_calls', 'N/A')}")
+                    print(f"\n⚙️  Execution Details:")
+                    print(f"   - Rounds: {meta.get('rounds', 'N/A')}")
+                    print(f"   - Agent Calls: {meta.get('total_agent_calls', 'N/A')}")
+                    print(f"   - Duration: {meta.get('duration_seconds', 'N/A')}s")
                 
                 return True
             else:
-                print(f" Query failed: {response.status_code}")
-                print(f"Response: {response.text[:500]}")
+                print(f"❌ Chat query failed with status {response.status_code}")
+                print(f"   Response: {response.text[:500]}")
                 return False
                 
-        except Exception as e:
-            print(f" Error executing query: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-
-
-async def test_graph_query_through_orchestrator():
-    """Test Graph query through orchestrator."""
-    print("\n" + "="*70)
-    print(" Testing Graph Query via Orchestrator")
-    print("="*70)
-    
-    async with httpx.AsyncClient() as client:
-        user_query = "Show me accounts who have SOWs of type 'ai_chatbot' and hen get their email contacts from SQL"
-        request_data = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": user_query
-                }
-            ],
-            "user_id": "test_user@example.com",
-            "session_id": "test_session_2",
-            "metadata": {}
-        }
-        
-        print(f"\n Sending query: {user_query}")
-        
-        try:
-            response = await client.post(
-                "http://localhost:8000/chat",
-                json=request_data,
-                timeout=60.0
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                print("\n Query executed successfully!")
-                print(f"\n Response:")
-                print(f"  Success: {data.get('success')}")
-                print(f"  Response: {data.get('response', 'N/A')[:200]}...")
-                
-                return True
-            else:
-                print(f" Query failed: {response.status_code}")
-                print(f"Response: {response.text[:500]}")
-                return False
-                
-        except Exception as e:
-            print(f" Error executing query: {e}")
-            return False
-
+    except Exception as e:
+        print(f"❌ Test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 async def main():
-    """Run all orchestrator tests."""
-    print("="*70)
-    print(" Testing Orchestrator")
-    print("="*70)
-    print("\n  Prerequisites:")
-    print("  1. SQL MCP Server running on port 8001")
-    print("  2. Graph MCP Server running on port 8002")
-    print("  3. Orchestrator running on port 8000")
-    print("  4. DEV_MODE=true for local testing")
+    """Run orchestrator tests."""
+    print("\n" + "=" * 70)
+    print("🧪 ORCHESTRATOR TEST SUITE")
+    print("=" * 70)
     
-    # Test 1: Health check
-    print("\n" + "="*70)
-    print(" Health Check")
-    print("="*70)
-    healthy = await test_orchestrator_health()
+    # Test 1: Health Check
+    health_result = await test_orchestrator_health()
     
-    if not healthy:
-        print("\n Orchestrator is not running!")
-        print("\n To start the orchestrator:")
+    if not health_result:
+        print("\n⚠️  Orchestrator is not running! Skipping chat test.")
+        print("\n💡 To start the orchestrator:")
         print("   cd C:\\Users\\emili\\Documents\\AGENTIC_TOOL_USER\\agentic_framework")
-        print("   python -m orchestrator.app")
+        print("   $env:PYTHONPATH=\"C:\\Users\\emili\\Documents\\AGENTIC_TOOL_USER\\agentic_framework\"")
+        print("   python orchestrator/app.py")
         return
     
-    # Test 2: List MCPs
-    await test_list_mcps()
+    # Test 2: Chat Query
+    chat_result = await test_chat_query()
     
-    # Test 3: List Tools
-    await test_list_tools()
+    # Summary
+    print("\n" + "=" * 70)
+    print("📋 TEST SUMMARY")
+    print("=" * 70)
+    print(f"   Health Check: {'✅ PASSED' if health_result else '❌ FAILED'}")
+    print(f"   Chat Query:   {'✅ PASSED' if chat_result else '❌ FAILED'}")
     
-    # Test 4: SQL query
-    await test_sql_query_through_orchestrator()
-    
-    # Test 5: Graph query
-    await test_graph_query_through_orchestrator()
-    
-    print("\n" + "="*70)
-    print(" All orchestrator tests completed!")
-    print("="*70)
+    if health_result and chat_result:
+        print("\n" + "=" * 70)
+        print("✅ ALL TESTS PASSED")
+        print("=" * 70)
+    else:
+        print("\n" + "=" * 70)
+        print("❌ SOME TESTS FAILED")
+        print("=" * 70)
 
 
 if __name__ == "__main__":

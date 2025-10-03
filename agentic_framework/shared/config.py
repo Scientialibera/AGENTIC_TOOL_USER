@@ -107,7 +107,8 @@ class FrameworkSettings(BaseSettings):
     app_name: str = Field(default="Agentic Framework", description="Application name", alias='APP_NAME')
     version: str = Field(default="1.0.0", description="Application version")
     debug: bool = Field(default=False, description="Debug mode", alias='DEBUG')
-    dev_mode: bool = Field(default=False, description="Development mode (skips RBAC and auth)", alias='DEV_MODE')
+    dev_mode: bool = Field(default=False, description="Development mode (skips RBAC, returns dummy SQL data)", alias='DEV_MODE')
+    bypass_token: bool = Field(default=False, description="Bypass JWT token validation for API and MCP endpoints", alias='BYPASS_TOKEN')
     environment: str = Field(default="development", description="Environment", alias='ENVIRONMENT')
     
     # Azure AD / Entra ID authentication
