@@ -15,7 +15,7 @@ from shared.config import get_settings
 from shared.models import RBACContext, MCPDefinition, ToolDefinition
 from shared.aoai_client import AzureOpenAIClient
 from shared.cosmos_client import CosmosDBClient
-from discovery_service import MCPDiscoveryService
+from orchestrator.discovery_service import MCPDiscoveryService
 
 # ============================================================================
 # CONSTANTS

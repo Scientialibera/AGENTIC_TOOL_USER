@@ -2,23 +2,28 @@
 # Core dependencies for SQL query operations
 
 # FastMCP framework
-fastmcp>=0.1.0
+fastmcp
+
+# HTTP client (required by fabric_client)
+aiohttp
 
 # Azure SDK
-azure-identity>=1.15.0
-azure-cosmos>=4.5.1
+azure-identity
+azure-cosmos
 
 # OpenAI for query generation
-openai>=1.6.0
+openai
 
 # Database drivers
-pyodbc>=5.0.1
+pyodbc
 
 # Utilities
-structlog>=23.2.0
-tenacity>=8.2.3
-rapidfuzz>=3.5.0
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-python-dotenv>=1.0.0
-httpx>=0.25.0
+structlog
+tenacity
+rapidfuzz
+pydantic
+pydantic-settings
+python-dotenv
+httpx
+fastapi
+PyJWT[crypto]

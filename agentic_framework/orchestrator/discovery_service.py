@@ -70,17 +70,22 @@ class MCPDiscoveryService:
     
     async def _discover_mcp_from_server(self, mcp_name: str, endpoint: str) -> Optional[Dict[str, Any]]:
         """
-        Discover MCP from its endpoint.
+        Discover MCP from its endpoint and fetch its tools.
 
         Args:
             mcp_name: Name/ID of the MCP
             endpoint: HTTP endpoint URL for the MCP server
 
         Returns:
-            MCP information dict
+            MCP information dict with tools
         """
         try:
-            logger.info("Discovered MCP server", mcp_name=mcp_name, endpoint=endpoint)
+            logger.info("Discovering MCP server", mcp_name=mcp_name, endpoint=endpoint)
+
+            # Fetch tools from the MCP server
+            tools = await self._fetch_tools_from_mcp(mcp_name, endpoint)
+            
+            logger.info("Discovered MCP server", mcp_name=mcp_name, endpoint=endpoint, tool_count=len(tools))
 
             return {
                 "id": mcp_name,
@@ -88,11 +93,55 @@ class MCPDiscoveryService:
                 "endpoint": endpoint,
                 "transport": "http",
                 "enabled": True,
+                "tools": tools,
             }
             
         except Exception as e:
             logger.error("Failed to discover MCP from server", mcp_name=mcp_name, error=str(e))
             return None
+    
+    async def _fetch_tools_from_mcp(self, mcp_name: str, endpoint: str) -> List[Dict[str, Any]]:
+        """
+        Fetch tools from an MCP server's /tools endpoint.
+
+        Args:
+            mcp_name: Name of the MCP
+            endpoint: Base endpoint URL (e.g., https://sql-mcp.../mcp)
+
+        Returns:
+            List of tool definitions
+        """
+        try:
+            # Construct tools endpoint URL
+            tools_url = f"{endpoint}/tools"
+            logger.info("Fetching tools from MCP", mcp_name=mcp_name, tools_url=tools_url)
+            
+            response = await self.http_client.get(tools_url)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Handle different response formats
+                if isinstance(data, dict) and 'tools' in data:
+                    tools = data['tools']
+                elif isinstance(data, list):
+                    tools = data
+                else:
+                    logger.warning("Unexpected tools response format", mcp_name=mcp_name, data_type=type(data).__name__)
+                    return []
+                
+                logger.info("Fetched tools from MCP", mcp_name=mcp_name, tool_count=len(tools))
+                return tools
+            else:
+                logger.error("Failed to fetch tools from MCP", 
+                           mcp_name=mcp_name, 
+                           status_code=response.status_code,
+                           response=response.text[:200])
+                return []
+                
+        except Exception as e:
+            logger.error("Error fetching tools from MCP", mcp_name=mcp_name, error=str(e))
+            return []
 
     async def _filter_mcps_by_rbac(
         self,

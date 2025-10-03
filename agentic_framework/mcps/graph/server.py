@@ -329,4 +329,4 @@ async def graph_query(
 
 
 if __name__ == "__main__":
-    mcp.run(transport="http", port=MCP_SERVER_PORT)
+    mcp.run(transport="http", host="0.0.0.0", port=MCP_SERVER_PORT)

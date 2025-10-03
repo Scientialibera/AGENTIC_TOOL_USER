@@ -122,6 +122,47 @@ class FrameworkSettings(BaseSettings):
         alias='MCP_ENDPOINTS'
     )
 
+    @field_validator("mcp_endpoints", mode="before")
+    @classmethod
+    def fix_mcp_endpoints_json(cls, v):
+        """Fix improperly formatted JSON from Azure CLI environment variables."""
+        import re
+        import json
+        
+        if isinstance(v, dict):
+            # Already a dict, convert to JSON string
+            return json.dumps(v)
+        
+        if isinstance(v, str):
+            # Try parsing as-is first
+            try:
+                json.loads(v)
+                return v  # Already valid JSON
+            except json.JSONDecodeError:
+                pass
+            
+            # Fix missing quotes: {key: value} -> {"key": "value"}
+            # Match unquoted keys followed by colon
+            v = re.sub(r'\{(\w+):', r'{"\1":', v)  # First key
+            v = re.sub(r',\s*(\w+):', r', "\1":', v)  # Subsequent keys
+            
+            # Fix unquoted values (anything between : and , or })
+            # This won't touch already quoted values
+            def fix_value(match):
+                prefix = match.group(1)  # ": 
+                value = match.group(2).strip()  # the value
+                suffix = match.group(3)  # , or }
+                
+                # If value already has quotes, don't add more
+                if value.startswith('"') and value.endswith('"'):
+                    return f'{prefix}{value}{suffix}'
+                else:
+                    return f'{prefix}"{value}"{suffix}'
+            
+            v = re.sub(r'(:\s*)([^,}]+?)(\s*[,}])', fix_value, v)
+            
+        return v
+
     aoai: AzureOpenAISettings
     cosmos: CosmosDBSettings
     gremlin: GremlinSettings

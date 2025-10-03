@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import structlog
@@ -26,8 +26,8 @@ from shared.aoai_client import AzureOpenAIClient
 from shared.cosmos_client import CosmosDBClient
 from shared.unified_service import UnifiedDataService
 from shared.auth_provider import verify_token
-from discovery_service import MCPDiscoveryService
-from orchestrator import OrchestratorAgent
+from orchestrator.discovery_service import MCPDiscoveryService
+from orchestrator.orchestrator import OrchestratorAgent
 
 # ============================================================================
 # CONSTANTS
@@ -105,13 +105,39 @@ app = FastAPI(
 )
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"] if settings.debug else [],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+############################################################
+# VERY PERMISSIVE CORS (DEMO ONLY - NOT FOR PRODUCTION)
+# We implement manual handling because the standard middleware
+# was still returning 400 for the browser preflight.
+############################################################
+from starlette.responses import PlainTextResponse
+
+@app.middleware("http")
+async def ultra_permissive_cors(request, call_next):
+    origin = request.headers.get("origin")
+    # Short‑circuit preflight explicitly
+    if request.method == "OPTIONS":
+        acrm = request.headers.get("access-control-request-method", "*")
+        acrh = request.headers.get("access-control-request-headers", "*")
+        resp = PlainTextResponse("OK", status_code=200)
+        if origin:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+        else:
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Vary"] = "Origin"
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+        resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = acrh if acrh else "*"
+        resp.headers["Access-Control-Max-Age"] = "600"
+        logger.info("Handled manual CORS preflight", origin=origin, methods=resp.headers["Access-Control-Allow-Methods"], headers=resp.headers["Access-Control-Allow-Headers"])
+        return resp
+
+    response = await call_next(request)
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 
 class ChatMessage(BaseModel):
@@ -147,7 +173,7 @@ async def get_rbac_context() -> RBACContext:
             roles=["admin"],
             access_scope=AccessScope(all_accounts=True),
         )
-    
+
     return RBACContext(
         user_id="user@example.com",
         email="user@example.com",
@@ -158,13 +184,24 @@ async def get_rbac_context() -> RBACContext:
     )
 
 
-@app.get("/health")
-async def health_check(token_payload: dict = Depends(verify_token)):
-    """Health check endpoint."""
+@app.get("/healthz")
+async def healthz():
+    """Unauthenticated health check endpoint for Docker/K8s probes."""
     return {
         "status": "healthy",
         "version": API_VERSION,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/health")
+async def health_check(token_payload: dict = Depends(verify_token)):
+    """Authenticated health check endpoint."""
+    return {
+        "status": "healthy",
+        "version": API_VERSION,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "user": token_payload.get("sub", "unknown"),
     }
 
 
