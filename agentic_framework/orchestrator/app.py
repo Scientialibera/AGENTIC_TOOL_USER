@@ -50,6 +50,29 @@ logger = structlog.get_logger(__name__)
 settings = get_settings()
 
 
+def _summarize_result(result: Dict[str, Any]) -> str:
+    """Summarize a tool execution result for display in lineage."""
+    if not result:
+        return "No result"
+    
+    # Check for common result patterns
+    if "row_count" in result:
+        return f"Retrieved {result['row_count']} rows"
+    elif "data" in result and isinstance(result["data"], list):
+        return f"Found {len(result['data'])} items"
+    elif "success" in result:
+        if result["success"]:
+            return "Success"
+        else:
+            return f"Error: {result.get('error', 'Unknown error')}"
+    elif "error" in result:
+        return f"Error: {result['error']}"
+    else:
+        # Generic summary
+        keys = list(result.keys())[:3]
+        return f"Returned: {', '.join(keys)}"
+
+
 class AppState:
     """Application state container."""
     
@@ -159,6 +182,8 @@ class ChatResponse(BaseModel):
     rounds: Optional[int] = None
     mcps_used: List[str] = Field(default_factory=list)
     execution_records: List[Dict[str, Any]] = Field(default_factory=list)
+    tool_lineage: List[Dict[str, Any]] = Field(default_factory=list)
+    reasoning_trace: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -310,11 +335,28 @@ async def chat(
         end_time = datetime.now(timezone.utc)
         execution_time_ms = int((end_time - start_time).total_seconds() * 1000)
         
+        # Build tool lineage for frontend display
+        execution_records = result.get("execution_records", [])
+        tool_lineage = []
+        for idx, record in enumerate(execution_records):
+            lineage_item = {
+                "step": idx + 1,
+                "tool_name": record.get("tool_name", "unknown"),
+                "mcp_server": record.get("mcp_id", "unknown"),
+                "input": record.get("arguments", {}),
+                "result_summary": _summarize_result(record.get("result", {})),
+                "timestamp": record.get("timestamp", end_time.isoformat()),
+            }
+            tool_lineage.append(lineage_item)
+        
+        # Extract reasoning trace if available
+        reasoning_trace = result.get("reasoning_trace", [])
+        
         execution_metadata = {
             "turn_id": turn_id,
             "rounds": result.get("rounds"),
             "mcps_used": result.get("mcps_used", []),
-            "execution_records": result.get("execution_records", []),
+            "execution_records": execution_records,
             "execution_time_ms": execution_time_ms,
             "success": result.get("success"),
             "timestamp": end_time.isoformat(),
@@ -335,6 +377,8 @@ async def chat(
                 session_id=session_id,
                 response=assistant_response,
                 success=False,
+                tool_lineage=tool_lineage,
+                reasoning_trace=reasoning_trace,
                 metadata=execution_metadata,
             )
         
@@ -344,7 +388,9 @@ async def chat(
             success=True,
             rounds=result.get("rounds"),
             mcps_used=result.get("mcps_used", []),
-            execution_records=result.get("execution_records", []),
+            execution_records=execution_records,
+            tool_lineage=tool_lineage,
+            reasoning_trace=reasoning_trace,
             metadata=execution_metadata,
         )
         

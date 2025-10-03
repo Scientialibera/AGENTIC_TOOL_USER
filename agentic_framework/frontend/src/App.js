@@ -16,6 +16,7 @@ function App() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [expandedLineage, setExpandedLineage] = useState(null);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -130,7 +131,9 @@ function App() {
         metadata: {
           rounds: data.rounds,
           mcps_used: data.mcps_used,
-          execution_time_ms: data.metadata?.execution_time_ms
+          execution_time_ms: data.metadata?.execution_time_ms,
+          tool_lineage: data.tool_lineage || [], // Array of {tool_name, mcp_server, timestamp, result_summary}
+          reasoning_trace: data.reasoning_trace || [] // Array of reasoning steps
         }
       }]);
     } catch (err) {
@@ -228,10 +231,58 @@ Try: Right-click page → Inspect → Network tab to see the actual request.`;
                     {msg.metadata.mcps_used?.join(', ')} • 
                     {msg.metadata.rounds} rounds • 
                     {(msg.metadata.execution_time_ms / 1000).toFixed(2)}s
+                    {msg.metadata.tool_lineage && msg.metadata.tool_lineage.length > 0 && (
+                      <button 
+                        className="lineage-button"
+                        onClick={() => setExpandedLineage(expandedLineage === idx ? null : idx)}
+                        title="View tool execution lineage"
+                      >
+                        💡 {expandedLineage === idx ? 'Hide' : 'Show'} Lineage
+                      </button>
+                    )}
                   </span>
                 )}
               </div>
               <div className="message-content">{msg.content}</div>
+              {msg.metadata && expandedLineage === idx && msg.metadata.tool_lineage && (
+                <div className="tool-lineage">
+                  <h4>🔍 Tool Execution Lineage</h4>
+                  {msg.metadata.tool_lineage.map((tool, toolIdx) => (
+                    <div key={toolIdx} className="lineage-item">
+                      <div className="lineage-header">
+                        <span className="lineage-step">Step {toolIdx + 1}</span>
+                        <span className="lineage-tool">{tool.tool_name || tool.name}</span>
+                        {tool.mcp_server && <span className="lineage-mcp">📊 {tool.mcp_server}</span>}
+                      </div>
+                      {tool.input && (
+                        <div className="lineage-detail">
+                          <strong>Input:</strong> {typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input, null, 2)}
+                        </div>
+                      )}
+                      {tool.result_summary && (
+                        <div className="lineage-detail">
+                          <strong>Result:</strong> {tool.result_summary}
+                        </div>
+                      )}
+                      {tool.timestamp && (
+                        <div className="lineage-timestamp">
+                          ⏱️ {new Date(tool.timestamp).toLocaleTimeString()}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {msg.metadata.reasoning_trace && msg.metadata.reasoning_trace.length > 0 && (
+                    <div className="reasoning-trace">
+                      <h4>🧠 Reasoning Trace</h4>
+                      {msg.metadata.reasoning_trace.map((step, stepIdx) => (
+                        <div key={stepIdx} className="reasoning-step">
+                          {step}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))}
           {loading && (
