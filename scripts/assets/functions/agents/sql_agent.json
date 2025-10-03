@@ -1,0 +1,29 @@
+{
+  "name": "sql_agent",
+  "description": "SQL agent for querying sales data, revenue metrics, and business analytics from the Fabric Lakehouse",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "User's natural language query about sales data or business metrics and all the context the agent needs to answer it. Do not write SQL or any other code, just provide a detailed description of what the user is looking for. Include any relevant details such as account names, timeframes, metrics, or specific data points mentioned by the user."
+      },
+      
+      "accounts_mentioned": {
+        "type": ["array", "null"],
+        "items": {"type": "string"},
+        "description": "List of account names/aliases mentioned in the query, or null if none."
+      }
+    },
+  "required": ["query"]
+  },
+  "agents": ["sql_agent"],
+  "metadata": {
+    "agent_type": "sql",
+    "category": "data_query",
+    "underlying_functions": ["execute_sql_query"],
+    "data_sources": ["fabric_lakehouse"],
+    "partition_key": "sql_agent"
+  },
+  "id": "sql_agent"
+}

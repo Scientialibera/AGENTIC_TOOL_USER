@@ -1,0 +1,69 @@
+{
+  "id": "graph_agent_function",
+  "agent_type": "graph",
+  "function_name": "graph_agent_function",
+  "name": "graph_agent_function",
+  "description": "Execute a Cosmos-Gremlin query with named parameter bindings. Use Cosmos-supported steps only (e.g., valueMap(true), project, coalesce).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "A parameterized Gremlin traversal. Example: g.V().has('account','name',name).both().hasLabel('account').valueMap(true)"
+      },
+      "bindings": {
+        "type": "object",
+        "description": "Name/value pairs used by the traversal (Gremlin bindings).",
+        "additionalProperties": true
+      },
+      "edge_labels": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Optional filter of relationship (edge) labels to traverse (e.g., ['competes_with','partner'])."
+      },
+      "max_depth": {
+        "type": "integer",
+        "description": "Maximum hop depth for multi-hop traversals.",
+        "default": 2,
+        "minimum": 1,
+        "maximum": 5
+      },
+      "format": {
+        "type": "string",
+        "enum": ["valueMap", "project"],
+        "default": "valueMap",
+        "description": "Result shape. 'valueMap' => valueMap(true); 'project' => server-side flatten via project/coalesce."
+      }
+    },
+    "required": ["query"]
+  },
+  "return_type": {
+    "type": "object",
+    "description": "Query results as rows/maps compatible with DataTable."
+  },
+  "examples": [
+    {
+      "input": {
+        "query": "g.V().has('account','name',name).both().hasLabel('account').valueMap(true)",
+        "bindings": { "name": "Microsoft Corporation" },
+        "format": "valueMap",
+        "max_depth": 2
+      },
+      "description": "Related accounts (both directions) using a Cosmos-supported result shape."
+    },
+    {
+      "input": {
+        "query": "g.V().has('account','name',name).bothE().as('e').otherV().hasLabel('account').as('v').project('id','name','rel').by(select('v').id()).by(select('v').values('name')).by(select('e').label())",
+        "bindings": { "name": "Microsoft Corporation" },
+        "format": "project"
+      },
+      "description": "Neighbors plus edge label (relationship type) using project/select."
+    }
+  ],
+  "safety_guidelines": [
+    "Always parameterize user inputs via bindings (never inline).",
+    "Use only Cosmos-supported steps (e.g., valueMap(true), project, coalesce, select, both/out/in). Avoid elementMap().",
+    "Limit traversal depth (max_depth) to control RU and latency.",
+    "Respect RBAC: the backend may add .has('role', within(...)) filters."
+  ]
+}

@@ -1,0 +1,525 @@
+"""
+FastAPI application for the Orchestrator Agent.
+
+This module creates the web API that receives chat requests and coordinates
+the orchestrator agent with MCP discovery and execution.
+"""
+
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
+
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+import structlog
+
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from shared.config import get_settings
+from shared.models import RBACContext, AccessScope
+from shared.aoai_client import AzureOpenAIClient
+from shared.cosmos_client import CosmosDBClient
+from shared.unified_service import UnifiedDataService
+from discovery_service import MCPDiscoveryService
+from orchestrator import OrchestratorAgent
+
+# ============================================================================
+# CONSTANTS
+# ============================================================================
+API_HOST = "0.0.0.0"
+API_PORT = 8000
+API_VERSION = "1.0.0"
+
+structlog.configure(
+    processors=[
+        structlog.dev.ConsoleRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    logger_factory=structlog.WriteLoggerFactory(),
+    cache_logger_on_first_use=True,
+)
+
+logger = structlog.get_logger(__name__)
+
+settings = get_settings()
+
+
+class AppState:
+    """Application state container."""
+    
+    def __init__(self):
+        self.aoai_client: Optional[AzureOpenAIClient] = None
+        self.cosmos_client: Optional[CosmosDBClient] = None
+        self.unified_service: Optional[UnifiedDataService] = None
+        self.discovery_service: Optional[MCPDiscoveryService] = None
+        self.orchestrator: Optional[OrchestratorAgent] = None
+
+
+app_state = AppState()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifecycle manager for the application."""
+    logger.info("Starting Orchestrator Agent API")
+    
+    app_state.aoai_client = AzureOpenAIClient(settings.aoai)
+    app_state.cosmos_client = CosmosDBClient(settings.cosmos)
+    app_state.unified_service = UnifiedDataService(app_state.cosmos_client, settings.cosmos)
+    app_state.discovery_service = MCPDiscoveryService(app_state.cosmos_client, settings)
+    app_state.orchestrator = OrchestratorAgent(
+        app_state.aoai_client,
+        app_state.cosmos_client,
+        app_state.discovery_service,
+        app_state.unified_service,
+        settings
+    )
+    
+    logger.info("All services initialized")
+    
+    yield
+    
+    logger.info("Shutting down Orchestrator Agent API")
+    
+    if app_state.orchestrator:
+        await app_state.orchestrator.close()
+    if app_state.discovery_service:
+        await app_state.discovery_service.close()
+    if app_state.aoai_client:
+        await app_state.aoai_client.close()
+    if app_state.cosmos_client:
+        await app_state.cosmos_client.close()
+
+
+app = FastAPI(
+    title="Orchestrator Agent API",
+    version="1.0.0",
+    description="Agentic Framework Orchestrator with FastMCP",
+    lifespan=lifespan,
+)
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if settings.debug else [],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class ChatMessage(BaseModel):
+    role: str = Field(..., description="Message role")
+    content: str = Field(..., description="Message content")
+
+
+class ChatRequest(BaseModel):
+    messages: List[ChatMessage]
+    user_id: str
+    session_id: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ChatResponse(BaseModel):
+    session_id: str
+    response: str
+    success: bool
+    rounds: Optional[int] = None
+    mcps_used: List[str] = Field(default_factory=list)
+    execution_records: List[Dict[str, Any]] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+async def get_rbac_context() -> RBACContext:
+    """Get RBAC context for the current request."""
+    if settings.dev_mode:
+        return RBACContext(
+            user_id="dev@example.com",
+            email="dev@example.com",
+            tenant_id="dev-tenant",
+            object_id="dev-object",
+            roles=["admin"],
+            access_scope=AccessScope(all_accounts=True),
+        )
+    
+    return RBACContext(
+        user_id="user@example.com",
+        email="user@example.com",
+        tenant_id="tenant123",
+        object_id="user123",
+        roles=["sales_rep"],
+        access_scope=AccessScope(),
+    )
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {
+        "status": "healthy",
+        "version": API_VERSION,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(
+    request: ChatRequest,
+    rbac_context: RBACContext = Depends(get_rbac_context),
+) -> ChatResponse:
+    """
+    Process a chat request using the orchestrator.
+    
+    The orchestrator will:
+    1. Discover available MCPs based on RBAC
+    2. Load tool definitions
+    3. Plan and execute using Azure OpenAI
+    4. Return aggregated response
+    5. Persist conversation to Cosmos DB
+    """
+    from uuid import uuid4
+    from shared.unified_service import Message
+    
+    start_time = datetime.now(timezone.utc)
+    
+    try:
+        logger.info(
+            "Received chat request",
+            user_id=request.user_id,
+            message_count=len(request.messages),
+            session_id=request.session_id,
+        )
+        
+        if not request.messages:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No messages provided"
+            )
+        
+        user_query = request.messages[-1].content
+        session_id = request.session_id or str(uuid4())
+        turn_id = str(uuid4())
+        
+        conversation_history_from_db = None
+        if session_id and request.session_id:
+            try:
+                turns = await app_state.unified_service.get_chat_context(
+                    session_id,
+                    rbac_context,
+                    max_turns=3
+                )
+                if turns:
+                    conversation_history_from_db = []
+                    for turn in turns[-3:]:
+                        if turn.user_message and turn.assistant_message:
+                            conversation_history_from_db.append({
+                                "user_message": turn.user_message.content,
+                                "assistant_message": turn.assistant_message.content
+                            })
+            except Exception as e:
+                logger.warning("Failed to retrieve conversation history", error=str(e))
+        
+        conversation_history = [
+            {"role": msg.role, "content": msg.content}
+            for msg in request.messages[:-1]
+        ]
+        
+        result = await app_state.orchestrator.process_request(
+            user_query=user_query,
+            rbac_context=rbac_context,
+            conversation_history=conversation_history if conversation_history else conversation_history_from_db,
+            session_id=session_id,
+        )
+        
+        assistant_response = result.get("response", "An error occurred")
+        
+        end_time = datetime.now(timezone.utc)
+        execution_time_ms = int((end_time - start_time).total_seconds() * 1000)
+        
+        execution_metadata = {
+            "turn_id": turn_id,
+            "rounds": result.get("rounds"),
+            "mcps_used": result.get("mcps_used", []),
+            "execution_records": result.get("execution_records", []),
+            "execution_time_ms": execution_time_ms,
+            "success": result.get("success"),
+            "timestamp": end_time.isoformat(),
+        }
+        
+        await _persist_conversation_turn(
+            unified_service=app_state.unified_service,
+            session_id=session_id,
+            turn_id=turn_id,
+            user_message=user_query,
+            assistant_response=assistant_response,
+            rbac_context=rbac_context,
+            execution_metadata=execution_metadata,
+        )
+        
+        if not result.get("success"):
+            return ChatResponse(
+                session_id=session_id,
+                response=assistant_response,
+                success=False,
+                metadata=execution_metadata,
+            )
+        
+        return ChatResponse(
+            session_id=session_id,
+            response=assistant_response,
+            success=True,
+            rounds=result.get("rounds"),
+            mcps_used=result.get("mcps_used", []),
+            execution_records=result.get("execution_records", []),
+            metadata=execution_metadata,
+        )
+        
+    except Exception as e:
+        logger.error("Chat request failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+async def _persist_conversation_turn(
+    unified_service,
+    session_id: str,
+    turn_id: str,
+    user_message: str,
+    assistant_response: str,
+    rbac_context: RBACContext,
+    execution_metadata: Dict[str, Any],
+) -> None:
+    """Persist conversation turn to Cosmos DB."""
+    from shared.unified_service import Message
+    
+    try:
+        user_msg = Message(
+            id=f"{turn_id}_user",
+            role="user",
+            content=user_message,
+            timestamp=datetime.now(timezone.utc),
+            user_id=rbac_context.user_id
+        )
+
+        assistant_msg = Message(
+            id=f"{turn_id}_assistant",
+            role="assistant",
+            content=assistant_response,
+            timestamp=datetime.now(timezone.utc)
+        )
+
+        try:
+            await unified_service.add_conversation_turn(
+                chat_id=session_id,
+                user_message=user_msg,
+                assistant_message=assistant_msg,
+                rbac_context=rbac_context,
+                execution_metadata=execution_metadata,
+            )
+        except ValueError as e:
+            if "Chat session not found" in str(e):
+                logger.info("Creating new chat session", session_id=session_id, user_id=rbac_context.user_id)
+                await unified_service.create_chat_session(
+                    rbac_context=rbac_context,
+                    chat_id=session_id,
+                    title=None,
+                    metadata={}
+                )
+                await unified_service.add_conversation_turn(
+                    chat_id=session_id,
+                    user_message=user_msg,
+                    assistant_message=assistant_msg,
+                    rbac_context=rbac_context,
+                    execution_metadata=execution_metadata,
+                )
+            else:
+                raise
+    except Exception as e:
+        logger.warning("Failed to persist conversation turn", error=str(e))
+
+
+@app.get("/mcps")
+async def list_mcps(
+    rbac_context: RBACContext = Depends(get_rbac_context),
+):
+    """List available MCPs for the current user."""
+    try:
+        mcps = await app_state.discovery_service.discover_mcps(rbac_context)
+        
+        return {
+            "mcps": mcps,
+            "count": len(mcps),
+        }
+    except Exception as e:
+        logger.error("Failed to list MCPs", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@app.get("/tools")
+async def list_tools(
+    mcp_id: Optional[str] = None,
+    rbac_context: RBACContext = Depends(get_rbac_context),
+):
+    """List available tools, optionally filtered by MCP."""
+    try:
+        tools = await app_state.discovery_service.get_all_available_tools()
+        
+        if mcp_id:
+            tools = [t for t in tools if t.get("mcp_id") == mcp_id]
+        
+        return {
+            "tools": tools,
+            "count": len(tools),
+        }
+    except Exception as e:
+        logger.error("Failed to list tools", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@app.get("/sessions")
+async def list_sessions(
+    rbac_context: RBACContext = Depends(get_rbac_context),
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List all chat sessions for the current user."""
+    try:
+        sessions = await app_state.unified_service.get_user_chat_sessions(
+            user_id=rbac_context.user_id,
+            limit=limit,
+            offset=offset
+        )
+        
+        return {
+            "sessions": [
+                {
+                    "chat_id": s.chat_id,
+                    "title": s.title,
+                    "total_turns": s.total_turns,
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
+                    "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+                }
+                for s in sessions
+            ],
+            "count": len(sessions),
+        }
+    except Exception as e:
+        logger.error("Failed to list sessions", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@app.get("/sessions/{session_id}")
+async def get_session(
+    session_id: str,
+    rbac_context: RBACContext = Depends(get_rbac_context),
+    max_turns: int = 50,
+):
+    """Get a specific chat session with its history."""
+    try:
+        turns = await app_state.unified_service.get_chat_context(
+            session_id,
+            rbac_context,
+            max_turns=max_turns
+        )
+        
+        conversation_turns = []
+        for t in turns:
+            feedback = None
+            try:
+                feedback_data = await app_state.unified_service.get_feedback_for_turn(t.id)
+                if feedback_data:
+                    feedback = {
+                        "rating": feedback_data.rating if hasattr(feedback_data, 'rating') else feedback_data.get('rating'),
+                        "comment": feedback_data.comment if hasattr(feedback_data, 'comment') else feedback_data.get('comment'),
+                        "created_at": feedback_data.created_at if hasattr(feedback_data, 'created_at') else feedback_data.get('created_at'),
+                    }
+            except Exception as e:
+                logger.debug("No feedback found for turn", turn_id=t.id, error=str(e))
+
+            turn_data = {
+                "turn_id": t.id,
+                "turn_number": t.turn_number,
+                "user_message": t.user_message.to_dict() if hasattr(t.user_message, 'to_dict') else {
+                    "id": t.user_message.id,
+                    "role": t.user_message.role,
+                    "content": t.user_message.content,
+                    "timestamp": t.user_message.timestamp.isoformat() if t.user_message.timestamp else None,
+                },
+                "assistant_message": t.assistant_message.to_dict() if hasattr(t.assistant_message, 'to_dict') else {
+                    "id": t.assistant_message.id if t.assistant_message else None,
+                    "role": t.assistant_message.role if t.assistant_message else "assistant",
+                    "content": t.assistant_message.content if t.assistant_message else "",
+                    "timestamp": t.assistant_message.timestamp.isoformat() if t.assistant_message and t.assistant_message.timestamp else None,
+                } if t.assistant_message else None,
+                "planning_time_ms": t.planning_time_ms,
+                "total_time_ms": t.total_time_ms,
+                "execution_metadata": t.execution_metadata,
+                "feedback": feedback,
+            }
+            conversation_turns.append(turn_data)
+
+        return {
+            "session_id": session_id,
+            "turns": conversation_turns,
+            "total_turns": len(conversation_turns)
+        }
+    except Exception as e:
+        logger.error("Failed to get session", session_id=session_id, error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+class FeedbackRequest(BaseModel):
+    turn_id: str
+    rating: int = Field(..., ge=1, le=5, description="Rating from 1 to 5")
+    comment: Optional[str] = None
+
+
+@app.post("/feedback")
+async def submit_feedback(
+    feedback: FeedbackRequest,
+    rbac_context: RBACContext = Depends(get_rbac_context),
+):
+    """Submit feedback for a conversation turn."""
+    try:
+        feedback_id = await app_state.unified_service.submit_feedback(
+            turn_id=feedback.turn_id,
+            user_id=rbac_context.user_id,
+            rating=feedback.rating,
+            comment=feedback.comment,
+        )
+        
+        return {
+            "success": True,
+            "feedback_id": feedback_id,
+            "turn_id": feedback.turn_id,
+        }
+    except Exception as e:
+        logger.error("Failed to submit feedback", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host=API_HOST, port=API_PORT)

@@ -1,0 +1,29 @@
+{
+  "name": "graph_agent",
+  "description": "Graph agent for querying relationships, connections, and account information from the knowledge graph",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "User's natural language query about relationships, connections, or account information and all the context the agent needs to answer it. Do not write graph query or any other code, just provide a detailed description of what the user is looking for. Include any relevant details such as account names, timeframes, metrics, or specific data points mentioned by the user."
+      },
+      
+      "accounts_mentioned": {
+        "type": ["array", "null"],
+        "items": {"type": "string"},
+        "description": "List of account names/aliases mentioned in the query, or null if none."
+      }
+    },
+  "required": ["query"]
+  },
+  "agents": ["graph_agent"],
+    "metadata": {
+    "agent_type": "graph",
+    "category": "relationship_query",
+    "underlying_functions": ["graph_agent_function", "account_resolver_function"],
+    "data_sources": ["gremlin_graph"],
+    "partition_key": "graph_agent"
+  },
+  "id": "graph_agent"
+}
