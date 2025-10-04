@@ -251,17 +251,29 @@ Try: Right-click page → Inspect → Network tab to see the actual request.`;
                     <div key={toolIdx} className="lineage-item">
                       <div className="lineage-header">
                         <span className="lineage-step">Step {toolIdx + 1}</span>
-                        <span className="lineage-tool">{tool.tool_name || tool.name}</span>
                         {tool.mcp_server && <span className="lineage-mcp">📊 {tool.mcp_server}</span>}
+                        <span className="lineage-tool">{tool.tool_name || tool.name}</span>
                       </div>
+                      {tool.mcp_server && (
+                        <div className="mcp-call-info">
+                          <strong>MCP Called:</strong> <code>{tool.mcp_server}</code> → <code>{tool.tool_name || tool.name}</code>
+                        </div>
+                      )}
                       {tool.input && (
                         <div className="lineage-detail">
-                          <strong>Input:</strong> {typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input, null, 2)}
+                          <strong>Input:</strong> 
+                          <pre className="lineage-code">{typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input, null, 2)}</pre>
                         </div>
                       )}
                       {tool.result_summary && (
                         <div className="lineage-detail">
-                          <strong>Result:</strong> {tool.result_summary}
+                          <strong>Result Summary:</strong> {tool.result_summary}
+                        </div>
+                      )}
+                      {tool.output && (
+                        <div className="lineage-detail">
+                          <strong>Full Output:</strong>
+                          <pre className="lineage-code">{typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}</pre>
                         </div>
                       )}
                       {tool.timestamp && (

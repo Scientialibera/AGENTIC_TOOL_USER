@@ -145,33 +145,20 @@ async def load_agent_tools() -> List[Dict[str, Any]]:
 
 
 async def resolve_accounts(
-    account_names: List[str],
-    rbac_context: Optional[Dict[str, Any]] = None
+    account_names: List[str]
 ) -> List[Dict[str, Any]]:
-    """Resolve account names using account resolver service."""
+    """Resolve account names using account resolver service with fuzzy matching."""
     try:
         if not account_names:
             return []
-        
+
         if account_resolver is None:
             await initialize_clients()
-        
-        rbac_obj = None
-        if rbac_context:
-            from shared.models import RBACContext, AccessScope
-            rbac_obj = RBACContext(
-                user_id=rbac_context.get("user_id", "unknown"),
-                email=rbac_context.get("email", "unknown"),
-                tenant_id=rbac_context.get("tenant_id", "unknown"),
-                object_id=rbac_context.get("object_id", "unknown"),
-                roles=rbac_context.get("roles", []),
-                access_scope=AccessScope(**rbac_context.get("access_scope", {})),
-            )
-        
-        accounts = await account_resolver.resolve_account_names(account_names, rbac_obj)
-        
+
+        accounts = await account_resolver.resolve_account_names(account_names)
+
         results = [{"id": acc.id, "name": acc.name} for acc in accounts]
-        
+
         logger.info("Resolved accounts", count=len(results))
         return results
     except Exception as e:
@@ -237,7 +224,7 @@ async def graph_query(
         # Resolve account names if provided
         resolved_accounts = []
         if accounts_mentioned:
-            resolved_accounts = await resolve_accounts(accounts_mentioned, rbac_context)
+            resolved_accounts = await resolve_accounts(accounts_mentioned)
         
         # ALWAYS generate Gremlin query from natural language using internal LLM
         system_prompt = await get_system_prompt(rbac_context)
@@ -311,8 +298,7 @@ async def graph_query(
             "data": results,
             "source": "gremlin_graph",
             "resolved_accounts": resolved_accounts,
-            "bindings": query_bindings,
-            "format": format,
+            "bindings": query_bindings
         }
         
     except Exception as e:

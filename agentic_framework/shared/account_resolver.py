@@ -4,12 +4,11 @@ Account resolver service for the agentic framework.
 Provides fuzzy matching account resolution using Levenshtein distance.
 """
 
-from typing import List, Dict, Any, Optional
-from datetime import datetime
+from typing import List, Optional
 from rapidfuzz import process, fuzz
 import structlog
 
-from shared.models import Account, RBACContext
+from shared.models import Account
 from shared.fabric_client import FabricClient
 
 logger = structlog.get_logger(__name__)
@@ -17,7 +16,7 @@ logger = structlog.get_logger(__name__)
 
 class AccountResolverService:
     """Account resolver using fuzzy matching."""
-    
+
     def __init__(
         self,
         fabric_client: Optional[FabricClient] = None,
@@ -30,46 +29,52 @@ class AccountResolverService:
         self.confidence_threshold = confidence_threshold
         self.max_suggestions = max_suggestions
         self.dev_mode = dev_mode
-        
+
         logger.info(
             "Account resolver initialized",
             confidence_threshold=confidence_threshold,
             dev_mode=dev_mode,
         )
-    
+
     async def resolve_account_names(
         self,
         account_names: List[str],
-        rbac_context: Optional[RBACContext] = None,
     ) -> List[Account]:
-        """Resolve list of account names to Account objects."""
+        """
+        Resolve list of account names to Account objects using fuzzy matching.
+
+        Args:
+            account_names: List of account names to resolve
+
+        Returns:
+            List of resolved Account objects (deduplicated)
+        """
         if not account_names:
             return []
-        
+
         try:
-            if self.dev_mode:
-                return await self._get_dummy_accounts(rbac_context)
-            
-            allowed_accounts = await self._get_allowed_accounts(rbac_context)
-            
-            if not allowed_accounts:
-                logger.warning("No allowed accounts", user_id=rbac_context.user_id if rbac_context else "unknown")
+            # Get all available accounts (dummy or real)
+            all_accounts = await self._get_all_accounts()
+
+            if not all_accounts:
+                logger.warning("No accounts available for matching")
                 return []
-            
-            allowed_account_names = [acc.name for acc in allowed_accounts]
+
+            # Fuzzy match against all accounts
+            all_account_names = [acc.name for acc in all_accounts]
             resolved_accounts_map = {}
-            
+
             for name in account_names:
                 match = process.extractOne(
                     name,
-                    allowed_account_names,
+                    all_account_names,
                     scorer=fuzz.WRatio,
                     score_cutoff=self.confidence_threshold
                 )
-                
+
                 if match:
                     match_name, score, index = match
-                    account = allowed_accounts[index]
+                    account = all_accounts[index]
                     resolved_accounts_map[account.id] = account
                     logger.info(
                         "Account resolved",
@@ -78,8 +83,8 @@ class AccountResolverService:
                         confidence=score,
                     )
                 else:
-                    logger.warning("No match found", input_name=name)
-            
+                    logger.warning("No match found", input_name=name, threshold=self.confidence_threshold)
+
             resolved_accounts = list(resolved_accounts_map.values())
             logger.info(
                 "Account names resolved",
@@ -87,21 +92,21 @@ class AccountResolverService:
                 resolved_count=len(resolved_accounts),
             )
             return resolved_accounts
-            
+
         except Exception as e:
             logger.error("Failed to resolve account names", error=str(e))
             return []
-    
-    async def _get_allowed_accounts(self, rbac_context: Optional[RBACContext]) -> List[Account]:
-        """Get list of accounts user has access to."""
+
+    async def _get_all_accounts(self) -> List[Account]:
+        """Get all available accounts (dummy in dev mode, real from Fabric otherwise)."""
         try:
-            if not self.fabric_client:
-                return await self._get_dummy_accounts(rbac_context)
-            
+            if self.dev_mode or not self.fabric_client:
+                return self._get_dummy_accounts()
+
             query = "SELECT id, name, industry, revenue, employee_count FROM accounts LIMIT 1000"
-            
+
             results = await self.fabric_client.execute_query(query)
-            
+
             accounts = []
             for row in results:
                 accounts.append(Account(
@@ -111,18 +116,16 @@ class AccountResolverService:
                     revenue=row.get("revenue"),
                     employee_count=row.get("employee_count"),
                 ))
-            
-            logger.info("Retrieved allowed accounts", count=len(accounts))
+
+            logger.info("Retrieved accounts from Fabric", count=len(accounts))
             return accounts
-            
+
         except Exception as e:
-            logger.error("Failed to get allowed accounts", error=str(e))
-            return await self._get_dummy_accounts(rbac_context)
-    
-    async def _get_dummy_accounts(self, rbac_context: Optional[RBACContext]) -> List[Account]:
+            logger.error("Failed to get accounts from Fabric, falling back to dummy", error=str(e))
+            return self._get_dummy_accounts()
+
+    def _get_dummy_accounts(self) -> List[Account]:
         """Get dummy accounts for dev mode."""
-        user_id = rbac_context.user_id if rbac_context else "dev@example.com"
-        
         return [
             Account(
                 id="1",

@@ -495,12 +495,38 @@ body {
 }
 
 .lineage-mcp {
-  background: #f0f0f0;
-  color: #666;
-  padding: 4px 10px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 4px 12px;
   border-radius: 12px;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
+  box-shadow: 0 2px 4px rgba(102, 126, 234, 0.2);
+}
+
+.mcp-call-info {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+  padding: 10px 14px;
+  border-radius: 8px;
+  margin-top: 10px;
+  border-left: 3px solid #667eea;
+  font-size: 13px;
+}
+
+.mcp-call-info strong {
+  color: #667eea;
+  margin-right: 8px;
+}
+
+.mcp-call-info code {
+  background: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  color: #764ba2;
+  font-weight: 600;
+  border: 1px solid rgba(102, 126, 234, 0.2);
 }
 
 .lineage-detail {
@@ -515,6 +541,19 @@ body {
 .lineage-detail strong {
   color: #667eea;
   margin-right: 6px;
+}
+
+.lineage-code {
+  background: white;
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid #e1e8ed;
+  margin-top: 6px;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
 }
 
 .lineage-timestamp {

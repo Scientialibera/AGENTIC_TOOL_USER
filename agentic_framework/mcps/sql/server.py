@@ -172,33 +172,20 @@ async def load_agent_tools() -> List[Dict[str, Any]]:
 
 
 async def resolve_accounts(
-    account_names: List[str],
-    rbac_context: Optional[Dict[str, Any]] = None
+    account_names: List[str]
 ) -> List[Dict[str, Any]]:
     """Resolve account names to IDs using fuzzy matching."""
     try:
         if not account_names:
             return []
-        
+
         if account_resolver is None:
             await initialize_clients()
-        
-        rbac_obj = None
-        if rbac_context:
-            from shared.models import RBACContext, AccessScope
-            rbac_obj = RBACContext(
-                user_id=rbac_context.get("user_id", "unknown"),
-                email=rbac_context.get("email", "unknown"),
-                tenant_id=rbac_context.get("tenant_id", "unknown"),
-                object_id=rbac_context.get("object_id", "unknown"),
-                roles=rbac_context.get("roles", []),
-                access_scope=AccessScope(**rbac_context.get("access_scope", {})),
-            )
-        
-        accounts = await account_resolver.resolve_account_names(account_names, rbac_obj)
-        
+
+        accounts = await account_resolver.resolve_account_names(account_names)
+
         results = [{"id": acc.id, "name": acc.name} for acc in accounts]
-        
+
         logger.info("Resolved accounts", count=len(results))
         return results
     except Exception as e:
@@ -252,7 +239,7 @@ async def sql_query(
         
         resolved_accounts = []
         if accounts_mentioned:
-            resolved_accounts = await resolve_accounts(accounts_mentioned, rbac_context)
+            resolved_accounts = await resolve_accounts(accounts_mentioned)
         
         system_prompt = await get_system_prompt(rbac_context)
         
@@ -333,100 +320,102 @@ async def sql_query(
 
 
 def _get_dummy_sql_data(query: str, limit: int = 100) -> List[Dict[str, Any]]:
-    """Generate dummy SQL data for dev mode."""
-    query_lower = query.lower()
+    """Generate dummy SQL data for dev mode. Returns ALL data from all tables."""
+    # Always return a comprehensive dataset combining accounts, contacts, and opportunities
+    all_data = [
+        # Accounts
+        {
+            "table": "accounts",
+            "id": "1",
+            "name": "Microsoft Corporation",
+            "industry": "Technology",
+            "revenue": 211915000000.0,
+            "employee_count": 221000,
+        },
+        {
+            "table": "accounts",
+            "id": "2",
+            "name": "Salesforce Inc",
+            "industry": "Technology",
+            "revenue": 31352000000.0,
+            "employee_count": 79390,
+        },
+        {
+            "table": "accounts",
+            "id": "3",
+            "name": "Google LLC",
+            "industry": "Technology",
+            "revenue": 282836000000.0,
+            "employee_count": 182502,
+        },
+        # Contacts
+        {
+            "table": "contacts",
+            "account_id": "1",
+            "account_name": "Microsoft Corporation",
+            "first_name": "Satya",
+            "last_name": "Nadella",
+            "email": "satya.nadella@microsoft.com",
+            "title": "CEO",
+        },
+        {
+            "table": "contacts",
+            "account_id": "1",
+            "account_name": "Microsoft Corporation",
+            "first_name": "Amy",
+            "last_name": "Hood",
+            "email": "amy.hood@microsoft.com",
+            "title": "CFO",
+        },
+        {
+            "table": "contacts",
+            "account_id": "2",
+            "account_name": "Salesforce Inc",
+            "first_name": "Marc",
+            "last_name": "Benioff",
+            "email": "marc@salesforce.com",
+            "title": "CEO",
+        },
+        {
+            "table": "contacts",
+            "account_id": "2",
+            "account_name": "Salesforce Inc",
+            "first_name": "Amy",
+            "last_name": "Weaver",
+            "email": "aweaver@salesforce.com",
+            "title": "CFO",
+        },
+        # Opportunities
+        {
+            "table": "opportunities",
+            "account_id": "1",
+            "account_name": "Microsoft Corporation",
+            "opportunity_name": "Azure Enterprise Agreement",
+            "amount": 5000000.0,
+            "stage": "Negotiation",
+            "close_date": "2025-03-31",
+        },
+        {
+            "table": "opportunities",
+            "account_id": "2",
+            "account_name": "Salesforce Inc",
+            "opportunity_name": "Einstein AI Expansion",
+            "amount": 1500000.0,
+            "stage": "Proposal",
+            "close_date": "2025-02-28",
+        },
+        {
+            "table": "opportunities",
+            "account_id": "3",
+            "account_name": "Google LLC",
+            "opportunity_name": "Cloud Migration Project",
+            "amount": 3000000.0,
+            "stage": "Discovery",
+            "close_date": "2025-06-30",
+        },
+    ]
     
-    if "contact" in query_lower:
-        return [
-            {
-                "account_name": "Microsoft Corporation",
-                "first_name": "Satya",
-                "last_name": "Nadella",
-                "email": "satya.nadella@microsoft.com",
-                "title": "CEO",
-            },
-            {
-                "account_name": "Microsoft Corporation",
-                "first_name": "Amy",
-                "last_name": "Hood",
-                "email": "amy.hood@microsoft.com",
-                "title": "CFO",
-            },
-            {
-                "account_name": "Salesforce Inc",
-                "first_name": "Marc",
-                "last_name": "Benioff",
-                "email": "marc@salesforce.com",
-                "title": "CEO",
-            },
-            {
-                "account_name": "Salesforce Inc",
-                "first_name": "Amy",
-                "last_name": "Weaver",
-                "email": "aweaver@salesforce.com",
-                "title": "CFO",
-            },
-        ][:limit]
-    
-    elif "opportunity" in query_lower or "deal" in query_lower:
-        return [
-            {
-                "account_name": "Microsoft Corporation",
-                "opportunity_name": "Azure Enterprise Agreement",
-                "amount": 5000000.0,
-                "stage": "Negotiation",
-                "close_date": "2025-03-31",
-            },
-            {
-                "account_name": "Salesforce Inc",
-                "opportunity_name": "Einstein AI Expansion",
-                "amount": 1500000.0,
-                "stage": "Proposal",
-                "close_date": "2025-02-28",
-            },
-            {
-                "account_name": "Google LLC",
-                "opportunity_name": "Cloud Migration Project",
-                "amount": 3000000.0,
-                "stage": "Discovery",
-                "close_date": "2025-06-30",
-            },
-        ][:limit]
-    
-    elif "account" in query_lower:
-        return [
-            {
-                "id": "1",
-                "name": "Microsoft Corporation",
-                "industry": "Technology",
-                "revenue": 211915000000.0,
-                "employee_count": 221000,
-            },
-            {
-                "id": "2",
-                "name": "Salesforce Inc",
-                "industry": "Technology",
-                "revenue": 31352000000.0,
-                "employee_count": 79390,
-            },
-            {
-                "id": "3",
-                "name": "Google LLC",
-                "industry": "Technology",
-                "revenue": 282836000000.0,
-                "employee_count": 182502,
-            },
-        ][:limit]
-    
-    else:
-        return [
-            {
-                "id": "1",
-                "name": "Sample Record",
-                "value": "Demo Data",
-                "count": 42,
-            }
-        ][:limit]
+    return all_data[:limit]
 
 
 if __name__ == "__main__":

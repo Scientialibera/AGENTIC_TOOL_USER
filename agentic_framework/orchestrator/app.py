@@ -339,12 +339,14 @@ async def chat(
         execution_records = result.get("execution_records", [])
         tool_lineage = []
         for idx, record in enumerate(execution_records):
+            full_result = record.get("result", {})
             lineage_item = {
                 "step": idx + 1,
                 "tool_name": record.get("tool_name", "unknown"),
                 "mcp_server": record.get("mcp_id", "unknown"),
                 "input": record.get("arguments", {}),
-                "result_summary": _summarize_result(record.get("result", {})),
+                "result_summary": _summarize_result(full_result),
+                "output": full_result,  # Include full output for detailed view
                 "timestamp": record.get("timestamp", end_time.isoformat()),
             }
             tool_lineage.append(lineage_item)
