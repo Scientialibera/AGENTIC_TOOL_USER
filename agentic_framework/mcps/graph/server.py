@@ -229,7 +229,7 @@ async def graph_query(
         # ALWAYS generate Gremlin query from natural language using internal LLM
         system_prompt = await get_system_prompt(rbac_context)
         
-        user_message = f"Generate a Gremlin query for: {query}"
+        user_message = f"Generate a valid Gremlin query for: {query}"
         if resolved_accounts:
             account_names = [acc.get("name", "") for acc in resolved_accounts]
             user_message += f"\n\nAccount context: {', '.join(account_names)}"

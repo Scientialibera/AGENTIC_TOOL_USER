@@ -16,7 +16,8 @@ function App() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [expandedLineage, setExpandedLineage] = useState(null);
+  const [expandedLineage, setExpandedLineage] = useState(null); // Which message's lineage is open
+  const [expandedMcpCard, setExpandedMcpCard] = useState(null); // Which MCP card is expanded (format: "msgIdx-toolIdx")
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -247,42 +248,82 @@ Try: Right-click page → Inspect → Network tab to see the actual request.`;
               {msg.metadata && expandedLineage === idx && msg.metadata.tool_lineage && (
                 <div className="tool-lineage">
                   <h4>🔍 Tool Execution Lineage</h4>
-                  {msg.metadata.tool_lineage.map((tool, toolIdx) => (
-                    <div key={toolIdx} className="lineage-item">
-                      <div className="lineage-header">
-                        <span className="lineage-step">Step {toolIdx + 1}</span>
-                        {tool.mcp_server && <span className="lineage-mcp">📊 {tool.mcp_server}</span>}
-                        <span className="lineage-tool">{tool.tool_name || tool.name}</span>
-                      </div>
-                      {tool.mcp_server && (
-                        <div className="mcp-call-info">
-                          <strong>MCP Called:</strong> <code>{tool.mcp_server}</code> → <code>{tool.tool_name || tool.name}</code>
+                  <div className="lineage-container">
+                    {/* Timeline on the left */}
+                    <div className="lineage-timeline">
+                      {msg.metadata.tool_lineage.map((tool, toolIdx) => (
+                        <div key={toolIdx} className="timeline-node">
+                          <div className="timeline-number">{toolIdx + 1}</div>
+                          {toolIdx < msg.metadata.tool_lineage.length - 1 && <div className="timeline-connector"></div>}
                         </div>
-                      )}
-                      {tool.input && (
-                        <div className="lineage-detail">
-                          <strong>Input:</strong> 
-                          <pre className="lineage-code">{typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input, null, 2)}</pre>
-                        </div>
-                      )}
-                      {tool.result_summary && (
-                        <div className="lineage-detail">
-                          <strong>Result Summary:</strong> {tool.result_summary}
-                        </div>
-                      )}
-                      {tool.output && (
-                        <div className="lineage-detail">
-                          <strong>Full Output:</strong>
-                          <pre className="lineage-code">{typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}</pre>
-                        </div>
-                      )}
-                      {tool.timestamp && (
-                        <div className="lineage-timestamp">
-                          ⏱️ {new Date(tool.timestamp).toLocaleTimeString()}
-                        </div>
-                      )}
+                      ))}
                     </div>
-                  ))}
+                    
+                    {/* MCP cards on the right */}
+                    <div className="lineage-cards">
+                      {msg.metadata.tool_lineage.map((tool, toolIdx) => (
+                        <div key={toolIdx} className="mcp-card">
+                          {/* Level 1: MCP Server */}
+                          <div 
+                            className="mcp-header"
+                            onClick={() => {
+                              const key = `${idx}-${toolIdx}`;
+                              setExpandedMcpCard(expandedMcpCard === key ? null : key);
+                            }}
+                            style={{cursor: 'pointer'}}
+                          >
+                            <div className="mcp-title">
+                              <span className="mcp-badge">📊 {tool.mcp_server || 'MCP'}</span>
+                              <span className="mcp-arrow">{expandedMcpCard === `${idx}-${toolIdx}` ? '▼' : '▶'}</span>
+                            </div>
+                            <div className="mcp-summary">
+                              <span className="tool-name-preview">{tool.tool_name || tool.name}</span>
+                              <span className="result-preview">{tool.result_summary}</span>
+                            </div>
+                          </div>
+                          
+                          {/* Level 2: Tool Details (collapsible) */}
+                          {expandedMcpCard === `${idx}-${toolIdx}` && (
+                            <div className="tool-details">
+                              <div className="detail-section">
+                                <div className="detail-label">🔧 Tool Called</div>
+                                <div className="detail-value">
+                                  <code>{tool.tool_name || tool.name}</code>
+                                </div>
+                              </div>
+                              
+                              {tool.input && (
+                                <div className="detail-section">
+                                  <div className="detail-label">📥 Input</div>
+                                  <pre className="detail-code">{typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input, null, 2)}</pre>
+                                </div>
+                              )}
+                              
+                              {tool.result_summary && (
+                                <div className="detail-section">
+                                  <div className="detail-label">📊 Result</div>
+                                  <div className="detail-value">{tool.result_summary}</div>
+                                </div>
+                              )}
+                              
+                              {tool.output && (
+                                <div className="detail-section">
+                                  <div className="detail-label">📤 Full Output</div>
+                                  <pre className="detail-code">{typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}</pre>
+                                </div>
+                              )}
+                              
+                              {tool.timestamp && (
+                                <div className="detail-timestamp">
+                                  ⏱️ {new Date(tool.timestamp).toLocaleTimeString()}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                   {msg.metadata.reasoning_trace && msg.metadata.reasoning_trace.length > 0 && (
                     <div className="reasoning-trace">
                       <h4>🧠 Reasoning Trace</h4>
