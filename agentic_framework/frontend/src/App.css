@@ -547,6 +547,27 @@ body {
   box-shadow: 0 2px 6px rgba(102, 126, 234, 0.3);
 }
 
+/* MCP-specific badge colors */
+.mcp-badge.mcp-sql {
+  background: linear-gradient(135deg, #4a90e2 0%, #357abd 100%);
+  box-shadow: 0 2px 6px rgba(74, 144, 226, 0.3);
+}
+
+.mcp-badge.mcp-graph {
+  background: linear-gradient(135deg, #f39c12 0%, #d68910 100%);
+  box-shadow: 0 2px 6px rgba(243, 156, 18, 0.3);
+}
+
+.mcp-badge.mcp-interpreter {
+  background: linear-gradient(135deg, #27ae60 0%, #229954 100%);
+  box-shadow: 0 2px 6px rgba(39, 174, 96, 0.3);
+}
+
+.mcp-badge.mcp-default {
+  background: linear-gradient(135deg, #95a5a6 0%, #7f8c8d 100%);
+  box-shadow: 0 2px 6px rgba(149, 165, 166, 0.3);
+}
+
 .mcp-arrow {
   color: #667eea;
   font-size: 12px;
@@ -650,6 +671,68 @@ body {
   max-height: 400px;
   overflow-y: auto;
   line-height: 1.5;
+}
+
+/* Code Interpreter Specific Styles */
+.code-interpreter-section {
+  background: linear-gradient(135deg, #f8f9fa 0%, #fff 100%);
+  border: 2px solid rgba(102, 126, 234, 0.2);
+  border-radius: 12px;
+  padding: 16px;
+  margin-top: 12px;
+}
+
+.code-interpreter-section .detail-label {
+  color: #667eea;
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.python-code {
+  background: #282c34;
+  color: #abb2bf;
+  padding: 14px;
+  border-radius: 8px;
+  font-family: 'Fira Code', 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+  border: 1px solid #3e4451;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+.python-code code {
+  color: #e06c75;
+}
+
+.execution-result {
+  background: #f0f8ff;
+  border: 1px solid #b3d9ff;
+  color: #0066cc;
+  padding: 12px;
+  border-radius: 8px;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.execution-info {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: rgba(102, 126, 234, 0.05);
+  border-radius: 6px;
+  font-size: 11px;
+  color: #667eea;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .detail-timestamp {

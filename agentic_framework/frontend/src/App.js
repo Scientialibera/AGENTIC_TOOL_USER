@@ -273,7 +273,14 @@ Try: Right-click page → Inspect → Network tab to see the actual request.`;
                             style={{cursor: 'pointer'}}
                           >
                             <div className="mcp-title">
-                              <span className="mcp-badge">📊 {tool.mcp_server || 'MCP'}</span>
+                              <span className={`mcp-badge mcp-${tool.mcp_server?.replace('_mcp', '') || 'default'}`}>
+                                {tool.mcp_server === 'sql_mcp' && '🗄️'}
+                                {tool.mcp_server === 'graph_mcp' && '🕸️'}
+                                {tool.mcp_server === 'interpreter_mcp' && '�'}
+                                {!['sql_mcp', 'graph_mcp', 'interpreter_mcp'].includes(tool.mcp_server) && '�📊'}
+                                {' '}
+                                {tool.mcp_server || 'MCP'}
+                              </span>
                               <span className="mcp-arrow">{expandedMcpCard === `${idx}-${toolIdx}` ? '▼' : '▶'}</span>
                             </div>
                             <div className="mcp-summary">
@@ -299,14 +306,42 @@ Try: Right-click page → Inspect → Network tab to see the actual request.`;
                                 </div>
                               )}
                               
-                              {tool.result_summary && (
+                              {/* Special handling for code interpreter results */}
+                              {tool.tool_name === 'interpreter_agent' && tool.output && typeof tool.output === 'object' && tool.output.code && (
+                                <div className="detail-section code-interpreter-section">
+                                  <div className="detail-label">💻 Code Executed</div>
+                                  <pre className="detail-code python-code">
+                                    <code className="language-python">{tool.output.code}</code>
+                                  </pre>
+                                  {tool.output.result && (
+                                    <>
+                                      <div className="detail-label" style={{marginTop: '1rem'}}>📊 Execution Result</div>
+                                      <pre className="detail-code execution-result">{tool.output.result}</pre>
+                                    </>
+                                  )}
+                                  {tool.output.execution_time_ms && (
+                                    <div className="execution-info">
+                                      ⏱️ Execution time: {(tool.output.execution_time_ms / 1000).toFixed(2)}s
+                                      {tool.output.output_type && tool.output.output_type !== 'text' && (
+                                        <span style={{marginLeft: '1rem'}}>
+                                          🎨 Output type: {tool.output.output_type}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              
+                              {/* Generic result summary for non-interpreter tools */}
+                              {tool.result_summary && tool.tool_name !== 'interpreter_agent' && (
                                 <div className="detail-section">
                                   <div className="detail-label">📊 Result</div>
                                   <div className="detail-value">{tool.result_summary}</div>
                                 </div>
                               )}
                               
-                              {tool.output && (
+                              {/* Show full output for non-interpreter or as fallback */}
+                              {tool.output && (!tool.tool_name || tool.tool_name !== 'interpreter_agent' || typeof tool.output !== 'object' || !tool.output.code) && (
                                 <div className="detail-section">
                                   <div className="detail-label">📤 Full Output</div>
                                   <pre className="detail-code">{typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}</pre>
