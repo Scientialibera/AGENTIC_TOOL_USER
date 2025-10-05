@@ -10,7 +10,11 @@
       "Bash(Start-Sleep -Seconds 30)",
       "Bash(pwsh:*)",
       "Bash(tee:*)",
-      "Bash(az containerapp revision restart:*)"
+      "Bash(az containerapp revision restart:*)",
+      "Bash(az containerapp show:*)",
+      "Bash(az containerapp revision list:*)",
+      "Bash(az containerapp revision deactivate:*)",
+      "Bash(az containerapp revision show:*)"
     ],
     "deny": [],
     "ask": []

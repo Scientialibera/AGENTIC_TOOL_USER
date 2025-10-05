@@ -454,7 +454,8 @@ Write-Host "`n Deploying Frontend..." -ForegroundColor Cyan
 $frontendEnvVars = @(
     "APP_USERNAME=demo",
     "APP_PASSWORD_HASH=`$2a`$12`$OS3NkX.f9Dar.hLxvt/LJekEj3ZDTYppldqe/xR4yUu9teURE.mGm",
-    "NODE_ENV=production"
+    "NODE_ENV=production",
+    "ORCHESTRATOR_URL=https://$OrchestratorFqdn"
 )
 
 # Check if frontend app exists
