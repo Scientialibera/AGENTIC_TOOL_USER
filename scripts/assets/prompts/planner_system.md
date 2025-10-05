@@ -38,6 +38,20 @@ Use Graph for SOWs & relationships:
 - Relationship questions (account level)
 - Account hierarchy / org structure
 
+### Code Interpreter Agent
+Use Code Interpreter for computational tasks:
+- **Math calculations**: Revenue per employee, growth rates, percentages, ratios
+- **Data analysis**: Averages, sums, aggregations, statistical calculations
+- **Financial computations**: Profit margins, ROI, projections, weighted averages
+- **Complex calculations**: Multi-step formulas, algorithmic problems
+- **ANY numerical computation** - LLMs are bad at math, always use code execution!
+
+**When to use:**
+- User asks "how much", "calculate", "what's the average", "compute"
+- Any question requiring arithmetic operations
+- Processing numbers from previous tool results
+- Comparing or analyzing numerical data
+
 ### Direct Response
 - General knowledge not tied to proprietary data
 - Clarifications that require no tool calls

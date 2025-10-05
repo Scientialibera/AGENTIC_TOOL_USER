@@ -1,0 +1,30 @@
+# Interpreter MCP Server Requirements
+# Core dependencies for interpreter/code execution MCP
+
+# FastMCP framework
+fastmcp
+
+# HTTP client
+aiohttp
+
+# Azure SDK
+azure-identity
+azure-cosmos
+
+# OpenAI Assistants client
+openai
+
+# Utilities
+structlog
+tenacity
+pydantic
+pydantic-settings
+python-dotenv
+httpx
+fastapi
+PyJWT[crypto]
+
+# Optional for code execution results parsing
+numpy
+scipy
+pandas

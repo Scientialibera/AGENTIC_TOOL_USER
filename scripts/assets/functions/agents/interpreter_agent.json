@@ -1,0 +1,23 @@
+{
+  "name": "interpreter_agent",
+  "description": "Code interpreter agent for executing Python code to solve math, data analysis, and computational problems. Use for ANY calculation - LLMs are bad at math!",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Natural language task description with ALL numbers and context needed for computation. Include specific values, formulas, and expected output format. Example: 'Calculate revenue per employee if total revenue is $100,000 and we have 5 employees. Return as currency.' The agent will generate Python code and execute it."
+      }
+    },
+    "required": ["query"]
+  },
+  "agents": ["interpreter_agent"],
+  "metadata": {
+    "agent_type": "interpreter",
+    "category": "computation",
+    "underlying_functions": ["execute_python_code"],
+    "data_sources": ["code_interpreter"],
+    "partition_key": "interpreter_agent"
+  },
+  "id": "interpreter_agent"
+}

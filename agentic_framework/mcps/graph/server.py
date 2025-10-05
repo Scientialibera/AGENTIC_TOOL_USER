@@ -33,6 +33,13 @@ MCP_SERVER_PORT = 8002
 PROMPT_ID = "graph_agent_system"
 AGENT_TYPE = "graph"  # Used to match function patterns like graph_*_function
 DEFAULT_QUERY_LIMIT = 100
+
+# ============================================================================
+# MAGIC VARIABLES (centralized configuration)
+# ============================================================================
+TRANSPORT = "http"
+HOST = "0.0.0.0"
+SOURCE_NAME = "graph_mcp"
 DEFAULT_OUTPUT_FORMAT = "summary"
 
 logger = structlog.get_logger(__name__)
@@ -343,4 +350,13 @@ async def graph_query(
 
 
 if __name__ == "__main__":
-    mcp.run(transport="http", host="0.0.0.0", port=MCP_SERVER_PORT)
+    import os
+    
+    logger.info(f"Starting {MCP_SERVER_NAME} on {HOST}:{MCP_SERVER_PORT}")
+    
+    # Set environment variables for FastMCP to use correct host/port
+    os.environ["FASTMCP_HOST"] = HOST
+    os.environ["FASTMCP_PORT"] = str(MCP_SERVER_PORT)
+    
+    # Run the MCP server - FastMCP will use the env vars
+    mcp.run(transport=TRANSPORT)

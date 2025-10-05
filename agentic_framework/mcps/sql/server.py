@@ -35,6 +35,13 @@ AGENT_TYPE = "sql"  # Used to match function patterns like sql_*_function
 SQL_SCHEMA_CONTAINER = "sql_schema"  # Container name for SQL schema metadata
 DEFAULT_QUERY_LIMIT = 100
 
+# ============================================================================
+# MAGIC VARIABLES (centralized configuration)
+# ============================================================================
+TRANSPORT = "http"
+HOST = "0.0.0.0"
+SOURCE_NAME = "sql_mcp"
+
 logger = structlog.get_logger(__name__)
 
 settings = get_settings()
@@ -360,7 +367,7 @@ async def sql_query(
             "success": True,
             "query": sql_query,
             "row_count": len(results),
-            "data": results[:limit],
+            "data": results,
             "source": "fabric_sql" if not settings.dev_mode else "dummy_sql",
             "resolved_accounts": resolved_accounts,
         }
@@ -475,4 +482,13 @@ def _get_dummy_sql_data(query: str, limit: int = 100) -> List[Dict[str, Any]]:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="http", host="0.0.0.0", port=MCP_SERVER_PORT)
+    import os
+    
+    logger.info(f"Starting {MCP_SERVER_NAME} on {HOST}:{MCP_SERVER_PORT}")
+    
+    # Set environment variables for FastMCP to use correct host/port
+    os.environ["FASTMCP_HOST"] = HOST
+    os.environ["FASTMCP_PORT"] = str(MCP_SERVER_PORT)
+    
+    # Run the MCP server - FastMCP will use the env vars
+    mcp.run(transport=TRANSPORT)
