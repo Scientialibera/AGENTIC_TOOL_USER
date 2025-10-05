@@ -26,12 +26,13 @@ from shared.auth_provider import create_auth_provider
 MCP_SERVER_NAME = "Code Interpreter MCP Server"
 TRANSPORT = "http"  # MCP transport protocol
 HOST = "0.0.0.0"  # Server host
-MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8003"))  # Server port (from env or default 8003)
+MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8002"))  # Server port (from env or default 8002)
 
 # Agent Configuration
 AGENT_TYPE = "interpreter"
 PROMPT_ID = "interpreter_agent_system"
 DEFAULT_TIMEOUT = 300  # 5 minutes for code execution
+MAX_RETRY_ATTEMPTS = int(os.getenv("MCP_MAX_RETRIES", "3"))  # Self-healing retry attempts
 
 # Azure OpenAI Assistants API Configuration
 ASSISTANTS_API_VERSION = "2024-05-01-preview"
@@ -177,6 +178,18 @@ async def load_agent_tools() -> List[Dict[str, Any]]:
     return tools
 
 
+def has_execution_error(result_text: str, code: str) -> bool:
+    """Check if the code execution had an error based on result text patterns."""
+    error_patterns = [
+        "error:", "exception:", "traceback",
+        "nameerror", "typeerror", "valueerror",
+        "syntaxerror", "attributeerror", "keyerror",
+        "failed", "could not", "unable to"
+    ]
+    result_lower = result_text.lower()
+    return any(pattern in result_lower for pattern in error_patterns)
+
+
 @mcp.tool()
 async def interpreter_agent(
     query: str,
@@ -307,20 +320,31 @@ async def interpreter_agent(
 
         total_elapsed = int((time.time() - start_time) * 1000)
 
-        logger.info("✅ CODE EXECUTION COMPLETE", 
-                   code_blocks=len(code_executed),
-                   result_preview=result_text[:300],
-                   duration_ms=total_elapsed)
+        # Check if execution had errors
+        code_str = "\n\n".join(code_executed) if code_executed else CODE_FALLBACK_MESSAGE
+        execution_had_error = has_execution_error(result_text, code_str)
+        
+        if execution_had_error:
+            logger.warning("⚠️ CODE EXECUTION HAD ERRORS",
+                         code_preview=code_str[:200],
+                         error_preview=result_text[:300],
+                         duration_ms=total_elapsed)
+        else:
+            logger.info("✅ CODE EXECUTION COMPLETE", 
+                       code_blocks=len(code_executed),
+                       result_preview=result_text[:300],
+                       duration_ms=total_elapsed)
 
         result = {
-            "success": True,
-            "code": "\n\n".join(code_executed) if code_executed else CODE_FALLBACK_MESSAGE,
+            "success": not execution_had_error,  # Mark as failed if errors detected
+            "code": code_str,
             "result": result_text.strip(),
             "output_type": output_type,
             "execution_time_ms": total_elapsed,
             "source": SOURCE_NAME,
             "thread_id": thread.id,
-            "query": query
+            "query": query,
+            "had_errors": execution_had_error  # Flag for orchestrator to potentially retry
         }
 
         # Cleanup: Delete the thread to avoid accumulation
@@ -371,10 +395,6 @@ if __name__ == "__main__":
     import os
     
     logger.info(f"Starting {MCP_SERVER_NAME} on {HOST}:{MCP_SERVER_PORT} with transport={TRANSPORT}")
-    
-    # Set environment variables for FastMCP to use correct host/port
-    os.environ["FASTMCP_HOST"] = HOST
-    os.environ["FASTMCP_PORT"] = str(MCP_SERVER_PORT)
-    
-    # Run the MCP server - FastMCP will use the env vars
-    mcp.run(transport=TRANSPORT)
+
+    # Run the MCP server with explicit host and port
+    mcp.run(transport=TRANSPORT, host=HOST, port=MCP_SERVER_PORT)

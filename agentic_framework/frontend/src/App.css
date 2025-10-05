@@ -774,9 +774,17 @@ body {
 .message-content h3,
 .message-content h4 {
   color: #667eea;
-  margin-top: 16px;
-  margin-bottom: 8px;
+  margin-top: 24px;
+  margin-bottom: 12px;
   font-weight: 600;
+}
+
+.message-content h1:first-child,
+.message-content h2:first-child,
+.message-content h3:first-child,
+.message-content h4:first-child,
+.message-content p:first-child {
+  margin-top: 0;
 }
 
 .message-content h1 {
@@ -799,24 +807,36 @@ body {
 }
 
 .message-content p {
-  margin-bottom: 12px;
-  line-height: 1.6;
+  margin-bottom: 16px;
+  line-height: 1.7;
 }
 
 .message-content ul,
 .message-content ol {
-  margin-left: 20px;
-  margin-bottom: 12px;
+  margin-left: 24px;
+  margin-bottom: 16px;
+  padding-left: 8px;
 }
 
 .message-content li {
-  margin-bottom: 6px;
-  line-height: 1.6;
+  margin-bottom: 10px;
+  line-height: 1.7;
+  padding-left: 4px;
+}
+
+.message-content ol > li {
+  margin-bottom: 20px;
+}
+
+.message-content ul ul,
+.message-content ol ul {
+  margin-top: 8px;
+  margin-bottom: 8px;
 }
 
 .message-content strong {
-  font-weight: 600;
-  color: #764ba2;
+  font-weight: 700;
+  color: #333;
 }
 
 .message-content code {

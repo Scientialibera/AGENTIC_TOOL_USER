@@ -35,7 +35,7 @@ from orchestrator.discovery_service import MCPDiscoveryService
 # CONSTANTS
 # ============================================================================
 PROMPT_ID = "planner_system"
-DEFAULT_MAX_ROUNDS = 10
+DEFAULT_MAX_ROUNDS = 30
 
 logger = structlog.get_logger(__name__)
 

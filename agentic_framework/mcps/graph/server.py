@@ -29,10 +29,11 @@ from shared.auth_provider import create_auth_provider
 # CONSTANTS
 # ============================================================================
 MCP_SERVER_NAME = "Graph MCP Server"
-MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8002"))  # Server port (from env or default 8002)
+MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8001"))  # Server port (from env or default 8001)
 PROMPT_ID = "graph_agent_system"
 AGENT_TYPE = "graph"  # Used to match function patterns like graph_*_function
 DEFAULT_QUERY_LIMIT = 100
+MAX_RETRY_ATTEMPTS = int(os.getenv("MCP_MAX_RETRIES", "3"))  # Self-healing retry attempts
 
 # ============================================================================
 # MAGIC VARIABLES (centralized configuration)
@@ -201,6 +202,81 @@ async def resolve_accounts(
         return []
 
 
+async def retry_with_llm_feedback(
+    original_query: str,
+    error_message: str,
+    attempt: int,
+    system_prompt: str,
+    tools: List[Dict[str, Any]],
+    previous_gremlin: Optional[str] = None
+) -> Optional[str]:
+    """
+    Ask the LLM to fix the Gremlin query based on the error message.
+    
+    Args:
+        original_query: The original natural language query
+        error_message: The error from the failed Gremlin execution
+        attempt: Current retry attempt number
+        system_prompt: System prompt for the LLM
+        tools: Tool definitions for function calling
+        previous_gremlin: The Gremlin query that failed
+        
+    Returns:
+        Corrected Gremlin query or None if LLM couldn't fix it
+    """
+    logger.info("🔧 SELF-HEALING RETRY", attempt=attempt, error_preview=error_message[:100])
+    
+    feedback_message = f"""The previous Gremlin query failed with this error:
+
+ERROR: {error_message}
+
+Previous Gremlin: {previous_gremlin}
+
+Original request: {original_query}
+
+Please analyze the error and generate a CORRECTED Gremlin query that fixes the issue. Common fixes:
+- Fix vertex/edge labels if they don't exist
+- Adjust traversal syntax
+- Fix property names
+- Correct filter conditions
+- Fix aggregation steps"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": feedback_message},
+    ]
+    
+    try:
+        response = await aoai_client.create_chat_completion(
+            messages=messages,
+            tools=tools,
+            tool_choice="required"
+        )
+        
+        assistant_message = response["choices"][0]["message"]
+        
+        # Extract the corrected Gremlin
+        function_call = None
+        if assistant_message.get("tool_calls"):
+            function_call = assistant_message["tool_calls"][0].get("function")
+        elif assistant_message.get("function_call"):
+            function_call = assistant_message["function_call"]
+        
+        if not function_call:
+            logger.error("LLM didn't return a corrected query")
+            return None
+            
+        args = json.loads(function_call.get("arguments", "{}"))
+        corrected_gremlin = args.get("query", "")
+        
+        logger.info("✅ LLM generated corrected Gremlin", query_preview=corrected_gremlin[:100])
+        return corrected_gremlin
+        
+    except Exception as e:
+        logger.error("Failed to get LLM correction", error=str(e))
+        return None
+
+
 @mcp.tool()
 async def graph_query(
     query: str,
@@ -322,9 +398,51 @@ async def graph_query(
         
         logger.info("Extracted Gremlin query", query_preview=gremlin_query[:100], has_bindings=bool(query_bindings))
         
-        # Execute the Gremlin query (no dev mode dummy data for graph queries)
-        results = await gremlin_client.execute_query(gremlin_query, query_bindings)
-        logger.info("Graph query executed", result_count=len(results), bindings=query_bindings)
+        # Self-healing retry loop: Execute Gremlin with automatic error correction
+        results = None
+        last_error = None
+        
+        for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
+            try:
+                logger.info("🗃️ EXECUTING GREMLIN QUERY", query=gremlin_query[:200], attempt=attempt)
+                results = await gremlin_client.execute_query(gremlin_query, query_bindings)
+                logger.info("✅ GREMLIN QUERY COMPLETE", result_count=len(results), bindings=query_bindings, attempt=attempt)
+                
+                # Success! Break out of retry loop
+                break
+                
+            except Exception as gremlin_error:
+                last_error = str(gremlin_error)
+                logger.warning(f"❌ Gremlin execution failed", 
+                             attempt=attempt, 
+                             max_attempts=MAX_RETRY_ATTEMPTS,
+                             error=last_error[:200])
+                
+                # If this was the last attempt, raise the error
+                if attempt >= MAX_RETRY_ATTEMPTS:
+                    logger.error("🚨 All retry attempts exhausted", attempts=attempt)
+                    raise
+                
+                # Ask LLM to fix the query based on the error
+                corrected_gremlin = await retry_with_llm_feedback(
+                    original_query=query,
+                    error_message=last_error,
+                    attempt=attempt,
+                    system_prompt=system_prompt,
+                    tools=tools,
+                    previous_gremlin=gremlin_query
+                )
+                
+                if corrected_gremlin:
+                    gremlin_query = corrected_gremlin
+                    logger.info("🔄 Retrying with corrected Gremlin", attempt=attempt + 1)
+                else:
+                    logger.error("LLM couldn't generate a correction, giving up")
+                    raise Exception(f"Gremlin execution failed and LLM couldn't correct it: {last_error}")
+        
+        # If we got here without results, something went wrong
+        if results is None:
+            raise Exception(f"Gremlin execution failed after {MAX_RETRY_ATTEMPTS} attempts: {last_error}")
         
         return {
             "success": True,

@@ -10,21 +10,25 @@ async def get_tools_from_mcp(endpoint: str):
         return tools
 
 async def main():
-    print("=== SQL MCP Tools ===")
-    sql_tools = await get_tools_from_mcp("http://localhost:8001")
-    for tool in sql_tools:
-        print(f"Name: {tool.name}")
-        print(f"Description: {tool.description}")
-        print(f"Schema: {tool.inputSchema}")
-        print()
+    # Test Azure endpoints
+    endpoints = {
+        "SQL MCP": "https://sql-mcp.internal.calmpebble-eb198128.westus2.azurecontainerapps.io/mcp",
+        "Graph MCP": "https://graph-mcp.internal.calmpebble-eb198128.westus2.azurecontainerapps.io/mcp",
+        "Interpreter MCP": "https://interpreter-mcp.internal.calmpebble-eb198128.westus2.azurecontainerapps.io/mcp"
+    }
 
-    print("\n=== Graph MCP Tools ===")
-    graph_tools = await get_tools_from_mcp("http://localhost:8002")
-    for tool in graph_tools:
-        print(f"Name: {tool.name}")
-        print(f"Description: {tool.description}")
-        print(f"Schema: {tool.inputSchema}")
-        print()
+    for name, endpoint in endpoints.items():
+        print(f"\n=== {name} ({endpoint}) ===")
+        try:
+            tools = await get_tools_from_mcp(endpoint)
+            print(f"✅ Successfully connected! Found {len(tools)} tool(s)")
+            for tool in tools:
+                print(f"  - Name: {tool.name}")
+                print(f"    Description: {tool.description}")
+                print(f"    Schema: {tool.inputSchema}")
+                print()
+        except Exception as e:
+            print(f"❌ Error: {type(e).__name__}: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())

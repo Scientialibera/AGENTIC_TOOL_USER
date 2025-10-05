@@ -148,6 +148,30 @@ The framework expects these containers in `COSMOS_DATABASE_NAME`:
 }
 ```
 
+## Port Configuration
+
+**CRITICAL**: Each MCP server must use a unique port number. Ports are assigned sequentially starting from 8001, in alphabetical order by MCP folder name:
+
+- **Orchestrator**: Port 8000 (always)
+- **Graph MCP**: Port 8001 (alphabetically first)
+- **Interpreter MCP**: Port 8002 (alphabetically second)
+- **SQL MCP**: Port 8003 (alphabetically third)
+
+### How Port Assignment Works
+
+1. Each MCP server reads its port from the `MCP_PORT` environment variable
+2. The deployment script automatically assigns ports based on alphabetical folder order
+3. MCP servers **must** pass the port explicitly to `mcp.run()`:
+   ```python
+   mcp.run(transport=TRANSPORT, host=HOST, port=MCP_SERVER_PORT)
+   ```
+4. The port constant should read from environment:
+   ```python
+   MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8001"))  # Default for first MCP
+   ```
+
+**Important**: When adding new MCPs, they will automatically be assigned the next sequential port based on their alphabetical position.
+
 ## Testing
 
 ### Test Orchestrator
@@ -277,7 +301,57 @@ The framework supports three authentication modes controlled by environment vari
 
 ## Deployment
 
-See deployment scripts in `agentic_framework/deploy/`:
-- `deploy-aca.ps1` - Deploy to Azure Container Apps
+### Deployment Script
+
+The main deployment script is `agentic_framework/deploy/deploy-aca.ps1`. Run it from the repository root:
+
+```powershell
+# Deploy without rebuilding images (faster)
+.\agentic_framework\deploy\deploy-aca.ps1 -EnvFile .env
+
+# Deploy with image rebuild (after code changes)
+.\agentic_framework\deploy\deploy-aca.ps1 -EnvFile .env -BuildImages
+```
+
+### Deployment Process
+
+1. **Build Docker Images** (if `-BuildImages` flag is used):
+   - Builds orchestrator, all MCPs, and frontend
+   - Pushes images to Azure Container Registry
+
+2. **Configure Infrastructure**:
+   - Creates/updates Container Apps Environment
+   - Sets up Managed Identity with RBAC roles
+
+3. **Deploy MCPs**:
+   - Deploys each MCP with correct port assignment
+   - Sets all required environment variables
+   - Configures internal ingress
+
+4. **Deploy Orchestrator**:
+   - Builds `MCP_ENDPOINTS` JSON from discovered MCPs
+   - Configures external ingress on port 8000
+
+### Deployment Troubleshooting
+
+**MCP Starting on Wrong Port:**
+- Check that `MCP_PORT` environment variable is set in Container App
+- Verify MCP server code passes `port` parameter to `mcp.run()`:
+  ```python
+  mcp.run(transport=TRANSPORT, host=HOST, port=MCP_SERVER_PORT)
+  ```
+- Check logs: `az containerapp logs show --name <mcp-name> --resource-group <rg> --tail 10`
+
+**Orchestrator Can't Discover MCPs:**
+- Verify `MCP_ENDPOINTS` JSON format (no backticks, proper quotes)
+- Check MCP internal URLs match the format: `https://<mcp-name>.internal.<env-domain>/mcp`
+- Ensure all MCPs are running: `az containerapp list --resource-group <rg> --query "[].{Name:name, Status:properties.runningStatus}"`
+
+**Image Not Updating:**
+- Azure Container Apps caches images by tag
+- Force update with digest: `az containerapp update --image <registry>/<image>@sha256:<digest>`
+- Or use versioned tags (v1, v2, etc.) instead of `latest`
+
+### Other Deployment Scripts
 - `configure-env.ps1` - Configure environment variables for deployment
 - `update-mcp-urls.ps1` - Update MCP endpoints after deployment

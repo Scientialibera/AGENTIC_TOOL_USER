@@ -55,6 +55,12 @@ $mcpFolders = Get-ChildItem -Path $mcpsDir -Directory | Where-Object {
 }
 
 # Build MCP metadata array
+# IMPORTANT: Each MCP must be assigned a unique sequential port starting from 8001
+# The port assignment is alphabetical by folder name:
+#   - graph MCP:       8001 (first alphabetically)
+#   - interpreter MCP: 8002 (second alphabetically)
+#   - sql MCP:         8003 (third alphabetically)
+# The orchestrator always uses port 8000
 $mcpServers = @()
 $startPort = 8001  # MCPs start at 8001, orchestrator is 8000
 
@@ -364,8 +370,12 @@ foreach ($mcp in $mcpServers) {
 # Step 7: Deploy Orchestrator with dynamically generated MCP endpoints
 Write-Host "`n Deploying Orchestrator..." -ForegroundColor Cyan
 
-# Build MCP_ENDPOINTS JSON dynamically from discovered MCPs
-$mcpEndpointsJson = ($mcpEndpointsHash | ConvertTo-Json -Compress)
+# Build MCP_ENDPOINTS JSON manually to ensure proper formatting
+$mcpEndpointsParts = @()
+foreach ($key in $mcpEndpointsHash.Keys) {
+    $mcpEndpointsParts += "`"$key`":`"$($mcpEndpointsHash[$key])`""
+}
+$mcpEndpointsJson = "{$($mcpEndpointsParts -join ',')}"
 
 # Build LIST_OF_MCPS dynamically (comma-separated list of mcp names)
 $listOfMcps = ($mcpServers | ForEach-Object { "$($_.Name)_mcp" }) -join ","

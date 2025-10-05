@@ -29,11 +29,12 @@ from shared.auth_provider import create_auth_provider
 # CONSTANTS
 # ============================================================================
 MCP_SERVER_NAME = "SQL MCP Server"
-MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8001"))  # Server port (from env or default 8001)
+MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8003"))  # Server port (from env or default 8003)
 PROMPT_ID = "sql_agent_system"
 AGENT_TYPE = "sql"  # Used to match function patterns like sql_*_function
 SQL_SCHEMA_CONTAINER = "sql_schema"  # Container name for SQL schema metadata
 DEFAULT_QUERY_LIMIT = 100
+MAX_RETRY_ATTEMPTS = int(os.getenv("MCP_MAX_RETRIES", "3"))  # Self-healing retry attempts
 
 # ============================================================================
 # MAGIC VARIABLES (centralized configuration)
@@ -241,6 +242,81 @@ async def resolve_accounts(
         return []
 
 
+async def retry_with_llm_feedback(
+    original_query: str,
+    error_message: str,
+    attempt: int,
+    system_prompt: str,
+    tools: List[Dict[str, Any]],
+    previous_sql: Optional[str] = None
+) -> Optional[str]:
+    """
+    Ask the LLM to fix the SQL query based on the error message.
+    
+    Args:
+        original_query: The original natural language query
+        error_message: The error from the failed SQL execution
+        attempt: Current retry attempt number
+        system_prompt: System prompt for the LLM
+        tools: Tool definitions for function calling
+        previous_sql: The SQL that failed
+        
+    Returns:
+        Corrected SQL query or None if LLM couldn't fix it
+    """
+    logger.info("🔧 SELF-HEALING RETRY", attempt=attempt, error_preview=error_message[:100])
+    
+    feedback_message = f"""The previous SQL query failed with this error:
+
+ERROR: {error_message}
+
+Previous SQL: {previous_sql}
+
+Original request: {original_query}
+
+Please analyze the error and generate a CORRECTED SQL query that fixes the issue. Common fixes:
+- Fix table/column names if they don't exist
+- Adjust syntax for the SQL dialect
+- Fix data type mismatches
+- Correct JOIN conditions
+- Fix aggregation or GROUP BY clauses"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": feedback_message},
+    ]
+    
+    try:
+        response = await aoai_client.create_chat_completion(
+            messages=messages,
+            tools=tools,
+            tool_choice="required"
+        )
+        
+        assistant_message = response["choices"][0]["message"]
+        
+        # Extract the corrected SQL
+        function_call = None
+        if assistant_message.get("tool_calls"):
+            function_call = assistant_message["tool_calls"][0].get("function")
+        elif assistant_message.get("function_call"):
+            function_call = assistant_message["function_call"]
+        
+        if not function_call:
+            logger.error("LLM didn't return a corrected query")
+            return None
+            
+        args = json.loads(function_call.get("arguments", "{}"))
+        corrected_sql = args.get("query", "")
+        
+        logger.info("✅ LLM generated corrected SQL", query_preview=corrected_sql[:100])
+        return corrected_sql
+        
+    except Exception as e:
+        logger.error("Failed to get LLM correction", error=str(e))
+        return None
+
+
 @mcp.tool()
 async def sql_query(
     query: str,
@@ -350,15 +426,57 @@ async def sql_query(
         
         logger.info("Extracted SQL query", query_preview=sql_query[:100])
 
-        if settings.dev_mode:
-            results = _get_dummy_sql_data(sql_query, limit)
-            logger.info("Dev mode: using dummy SQL data", result_count=len(results))
-        else:
-            logger.info("🗃️ EXECUTING SQL QUERY", query=sql_query[:200])
-            sql_start = time.time()
-            results = await fabric_client.execute_query(sql_query)
-            sql_elapsed = int((time.time() - sql_start) * 1000)
-            logger.info("✅ SQL QUERY COMPLETE", duration_ms=sql_elapsed, row_count=len(results))
+        # Self-healing retry loop: Execute SQL with automatic error correction
+        results = None
+        last_error = None
+        
+        for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
+            try:
+                if settings.dev_mode:
+                    results = _get_dummy_sql_data(sql_query, limit)
+                    logger.info("Dev mode: using dummy SQL data", result_count=len(results))
+                else:
+                    logger.info("🗃️ EXECUTING SQL QUERY", query=sql_query[:200], attempt=attempt)
+                    sql_start = time.time()
+                    results = await fabric_client.execute_query(sql_query)
+                    sql_elapsed = int((time.time() - sql_start) * 1000)
+                    logger.info("✅ SQL QUERY COMPLETE", duration_ms=sql_elapsed, row_count=len(results), attempt=attempt)
+                
+                # Success! Break out of retry loop
+                break
+                
+            except Exception as sql_error:
+                last_error = str(sql_error)
+                logger.warning(f"❌ SQL execution failed", 
+                             attempt=attempt, 
+                             max_attempts=MAX_RETRY_ATTEMPTS,
+                             error=last_error[:200])
+                
+                # If this was the last attempt, raise the error
+                if attempt >= MAX_RETRY_ATTEMPTS:
+                    logger.error("🚨 All retry attempts exhausted", attempts=attempt)
+                    raise
+                
+                # Ask LLM to fix the query based on the error
+                corrected_sql = await retry_with_llm_feedback(
+                    original_query=query,
+                    error_message=last_error,
+                    attempt=attempt,
+                    system_prompt=system_prompt,
+                    tools=tools,
+                    previous_sql=sql_query
+                )
+                
+                if corrected_sql:
+                    sql_query = corrected_sql
+                    logger.info("🔄 Retrying with corrected SQL", attempt=attempt + 1)
+                else:
+                    logger.error("LLM couldn't generate a correction, giving up")
+                    raise Exception(f"SQL execution failed and LLM couldn't correct it: {last_error}")
+        
+        # If we got here without results, something went wrong
+        if results is None:
+            raise Exception(f"SQL execution failed after {MAX_RETRY_ATTEMPTS} attempts: {last_error}")
 
         total_elapsed = int((time.time() - start_time) * 1000)
         logger.info("✅ SQL TOOL COMPLETE", row_count=len(results), total_duration_ms=total_elapsed)
