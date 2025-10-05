@@ -1,8 +1,22 @@
 """
-Orchestrator Agent.
+Orchestrator Agent - 100% Generic Multi-MCP Router
 
-The main orchestrator that discovers MCPs, loads their tools, and coordinates
-execution using Azure OpenAI for planning and tool selection.
+This orchestrator is COMPLETELY GENERIC and requires ZERO code changes to add new MCPs!
+
+HOW TO ADD A NEW MCP:
+1. Create MCP from template: cp mcps/TEMPLATE_MCP.py mcps/<name>/server.py
+2. Upload tool definitions to Cosmos DB (agent_functions container)
+3. Upload system prompt to Cosmos DB (prompts container)
+4. Add MCP endpoint to .env: MCP_ENDPOINTS='{"new_mcp": "http://localhost:8003/mcp"}'
+5. Start your MCP server: python -m mcps.<name>.server
+
+That's it! This orchestrator will automatically:
+- Discover your MCP from MCP_ENDPOINTS
+- Load tool definitions via HTTP /mcp/tools
+- Route requests based on tool name → MCP mapping
+- Cache everything for performance
+
+NO ORCHESTRATOR CODE CHANGES NEEDED!
 """
 
 import json
@@ -69,20 +83,29 @@ class OrchestratorAgent:
     ) -> Dict[str, Any]:
         """
         Process a user request with multi-round planning and execution.
-        
+
+        PLUG-AND-PLAY ARCHITECTURE:
+        - MCPs discovered from MCP_ENDPOINTS env var (see discovery_service.py)
+        - Tools loaded via HTTP from each MCP's /mcp/tools endpoint
+        - Tool routing: tool_name → mcp_id mapping (cached in discovery_service)
+        - NO hardcoded MCP logic here!
+
         Args:
             user_query: User's natural language query
             rbac_context: User RBAC context
             conversation_history: Optional conversation history
             max_rounds: Maximum planning rounds
             session_id: Optional session ID for tracking
-        
+
         Returns:
             Dictionary with response and execution metadata
         """
         try:
             logger.info("Processing request", query=user_query[:100], user=rbac_context.user_id)
-            
+
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 1: DISCOVER MCPs (Automatic from MCP_ENDPOINTS env var)
+            # ═══════════════════════════════════════════════════════════════════
             mcps = await self.discovery_service.discover_mcps(rbac_context)
             
             if not mcps:
@@ -91,45 +114,58 @@ class OrchestratorAgent:
                     "error": "No MCPs available for user",
                     "response": "I don't have access to any tools to answer your question.",
                 }
-            
+
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 2: LOAD TOOLS (Automatic from each MCP's /mcp/tools endpoint)
+            # ═══════════════════════════════════════════════════════════════════
             available_tools = await self._load_all_tools(mcps, rbac_context)
-            
+
             if not available_tools:
                 return {
                     "success": False,
                     "error": "No tools available",
                     "response": "I don't have the necessary tools to answer your question.",
                 }
-            
+
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 3: LOAD ORCHESTRATOR PROMPT (Cached from Cosmos DB)
+            # ═══════════════════════════════════════════════════════════════════
             system_prompt = await self._get_orchestrator_prompt()
-            
+
             messages = [
                 {"role": "system", "content": system_prompt},
             ]
-            
+
             if conversation_history:
                 messages.extend(conversation_history)
-            
+
             messages.append({"role": "user", "content": user_query})
             
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 4: MULTI-ROUND PLANNING LOOP (LLM decides which tools to call)
+            # ═══════════════════════════════════════════════════════════════════
             execution_records = []
-            
+
             for round_num in range(max_rounds):
-                logger.info("Planning round", round=round_num + 1)
-                
+                import time
+                round_start = time.time()
+                logger.info("🔄 PLANNING ROUND START", round=round_num + 1, max_rounds=max_rounds)
+
+                # LLM chooses which tool to call based on available_tools
                 response = await self.aoai_client.create_chat_completion(
                     messages=messages,
                     tools=available_tools,
                     tool_choice="auto",
                 )
-                
+
                 assistant_msg = response["choices"][0]["message"]
                 tool_calls = assistant_msg.get("tool_calls")
-                
+
                 if not tool_calls:
                     final_response = assistant_msg.get("content", "")
-                    logger.info("Planning complete", rounds=round_num + 1)
-                    
+                    round_elapsed = int((time.time() - round_start) * 1000)
+                    logger.info("✅ PLANNING COMPLETE (no more tool calls)", rounds=round_num + 1, round_duration_ms=round_elapsed)
+
                     return {
                         "success": True,
                         "response": final_response,
@@ -137,13 +173,25 @@ class OrchestratorAgent:
                         "execution_records": execution_records,
                         "mcps_used": list(set([rec["mcp_id"] for rec in execution_records])),
                     }
-                
+
                 messages.append(assistant_msg)
-                
+
+                # ═══════════════════════════════════════════════════════════════════
+                # STEP 5: ROUTE & EXECUTE TOOLS (Automatic routing via tool_name → mcp_id)
+                # ═══════════════════════════════════════════════════════════════════
+                logger.info("🔧 EXECUTING TOOLS", tool_count=len(tool_calls), tools=[tc["function"]["name"] for tc in tool_calls])
+                tool_exec_start = time.time()
+
+                # Tool routing happens automatically in _execute_tool_calls
+                # It uses discovery_service.get_tool_mcp_mapping(tool_name) to find the right MCP
                 tool_results = await self._execute_tool_calls(
                     tool_calls, mcps, rbac_context
                 )
-                
+
+                tool_exec_elapsed = int((time.time() - tool_exec_start) * 1000)
+                round_elapsed = int((time.time() - round_start) * 1000)
+                logger.info("✅ TOOLS EXECUTED", tool_count=len(tool_calls), tool_exec_duration_ms=tool_exec_elapsed, round_duration_ms=round_elapsed)
+
                 execution_records.extend(tool_results)
                 
                 for tool_result in tool_results:
@@ -201,9 +249,11 @@ class OrchestratorAgent:
         rbac_context: RBACContext
     ) -> List[Dict[str, Any]]:
         """Execute tool calls by routing to appropriate MCPs."""
+        import time
         results = []
-        
-        for tool_call in tool_calls:
+
+        for idx, tool_call in enumerate(tool_calls, 1):
+            tool_start = time.time()
             tool_name = tool_call["function"]["name"]
             arguments_str = tool_call["function"]["arguments"]
             logger.debug("Raw tool arguments from OpenAI", tool_name=tool_name, arguments_str=arguments_str[:200])
@@ -213,40 +263,46 @@ class OrchestratorAgent:
             llm_arguments = arguments.copy()
 
             arguments["rbac_context"] = rbac_context.to_dict()
-            logger.debug("Calling tool with arguments", tool_name=tool_name, arguments_keys=list(arguments.keys()))
 
             mcp_id = await self._find_mcp_for_tool(tool_name, mcps)
 
             if not mcp_id:
-                logger.warning("No MCP found for tool", tool_name=tool_name)
+                logger.warning("❌ NO MCP FOUND", tool_name=tool_name, tool_num=f"{idx}/{len(tool_calls)}")
                 results.append({
                     "tool_call_id": tool_call["id"],
                     "tool_name": tool_name,
                     "mcp_id": None,
-                    "arguments": llm_arguments,  # Add LLM arguments
+                    "arguments": llm_arguments,
                     "result": {"success": False, "error": "Tool not found"},
                 })
                 continue
 
             try:
+                logger.info("⚙️ CALLING MCP TOOL", tool_name=tool_name, mcp_id=mcp_id, tool_num=f"{idx}/{len(tool_calls)}")
                 result = await self._call_mcp_tool(mcp_id, tool_name, arguments, mcps)
+
+                tool_elapsed = int((time.time() - tool_start) * 1000)
+                success = result.get("success", True) if isinstance(result, dict) else True
+                logger.info("✅ MCP TOOL COMPLETE", tool_name=tool_name, mcp_id=mcp_id, duration_ms=tool_elapsed, success=success)
+
                 results.append({
                     "tool_call_id": tool_call["id"],
                     "tool_name": tool_name,
                     "mcp_id": mcp_id,
-                    "arguments": llm_arguments,  # Add LLM arguments
+                    "arguments": llm_arguments,
                     "result": result,
                 })
             except Exception as e:
-                logger.error("Tool execution failed", tool_name=tool_name, error=str(e))
+                tool_elapsed = int((time.time() - tool_start) * 1000)
+                logger.error("❌ MCP TOOL FAILED", tool_name=tool_name, mcp_id=mcp_id, error=str(e), duration_ms=tool_elapsed)
                 results.append({
                     "tool_call_id": tool_call["id"],
                     "tool_name": tool_name,
                     "mcp_id": mcp_id,
-                    "arguments": llm_arguments,  # Add LLM arguments
+                    "arguments": llm_arguments,
                     "result": {"success": False, "error": str(e)},
                 })
-        
+
         return results
     
     async def _find_mcp_for_tool(

@@ -273,14 +273,22 @@ async def sql_query(
             }
     else:
         logger.warning("No request object provided - skipping authentication")
+
+    import time
+    start_time = time.time()
+
     try:
         await initialize_clients()
-        
-        logger.info("SQL tool called", query=query[:100])
-        
+
+        logger.info("📊 SQL TOOL START", query=query[:100], accounts_mentioned=accounts_mentioned)
+
         resolved_accounts = []
         if accounts_mentioned:
+            logger.info("🔍 Resolving account names", count=len(accounts_mentioned))
+            resolve_start = time.time()
             resolved_accounts = await resolve_accounts(accounts_mentioned)
+            resolve_elapsed = int((time.time() - resolve_start) * 1000)
+            logger.info("✅ Accounts resolved", count=len(resolved_accounts), duration_ms=resolve_elapsed)
         
         system_prompt = await get_system_prompt(rbac_context)
         
@@ -334,14 +342,20 @@ async def sql_query(
         sql_query = args.get("query", "")
         
         logger.info("Extracted SQL query", query_preview=sql_query[:100])
-        
+
         if settings.dev_mode:
             results = _get_dummy_sql_data(sql_query, limit)
             logger.info("Dev mode: using dummy SQL data", result_count=len(results))
         else:
+            logger.info("🗃️ EXECUTING SQL QUERY", query=sql_query[:200])
+            sql_start = time.time()
             results = await fabric_client.execute_query(sql_query)
-            logger.info("SQL query executed", result_count=len(results))
-        
+            sql_elapsed = int((time.time() - sql_start) * 1000)
+            logger.info("✅ SQL QUERY COMPLETE", duration_ms=sql_elapsed, row_count=len(results))
+
+        total_elapsed = int((time.time() - start_time) * 1000)
+        logger.info("✅ SQL TOOL COMPLETE", row_count=len(results), total_duration_ms=total_elapsed)
+
         return {
             "success": True,
             "query": sql_query,
@@ -350,9 +364,10 @@ async def sql_query(
             "source": "fabric_sql" if not settings.dev_mode else "dummy_sql",
             "resolved_accounts": resolved_accounts,
         }
-        
+
     except Exception as e:
-        logger.error("SQL tool execution failed", error=str(e))
+        total_elapsed = int((time.time() - start_time) * 1000)
+        logger.error("❌ SQL TOOL FAILED", error=str(e), total_duration_ms=total_elapsed)
         return {
             "success": False,
             "error": str(e),

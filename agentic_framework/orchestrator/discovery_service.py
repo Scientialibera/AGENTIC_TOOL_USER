@@ -1,8 +1,19 @@
 """
-MCP Discovery Service.
+MCP Discovery Service - Automatic MCP Discovery from Environment
 
-This service dynamically discovers MCP servers and their tools by calling
-the MCP servers directly via HTTP.
+This service dynamically discovers MCP servers from the MCP_ENDPOINTS environment variable.
+
+HOW IT WORKS:
+1. Reads MCP_ENDPOINTS from .env (JSON: {"mcp_name": "http://endpoint/mcp"})
+2. Calls each MCP's /mcp/tools endpoint to fetch tool definitions
+3. Caches everything on startup for performance
+4. Builds tool_name → mcp_id mapping for routing
+
+TO ADD NEW MCP:
+1. Add to .env: MCP_ENDPOINTS='{"new_mcp": "http://localhost:8003/mcp", ...}'
+2. That's it! Discovery happens automatically
+
+NO CODE CHANGES NEEDED!
 """
 
 from typing import List, Dict, Any, Optional
@@ -30,14 +41,18 @@ class MCPDiscoveryService:
         self.settings = settings or get_settings()
         self.http_client = httpx.AsyncClient(timeout=HTTP_CLIENT_TIMEOUT)
 
-        # Get MCP endpoints from settings (configured via MCP_ENDPOINTS env var)
+        # ═══════════════════════════════════════════════════════════════════
+        # PLUG-AND-PLAY: MCP endpoints from environment variable
+        # ═══════════════════════════════════════════════════════════════════
+        # Reads from MCP_ENDPOINTS in .env (JSON dictionary)
+        # Format: {"sql_mcp": "http://localhost:8001/mcp", "graph_mcp": "http://localhost:8002/mcp"}
         self.mcp_endpoints = self.settings.mcp_endpoints_dict
 
         # Cache for MCPs, tools, and RBAC configs
         self._mcps_cache: Optional[List[Dict[str, Any]]] = None
         self._tools_cache: Optional[List[Dict[str, Any]]] = None
         self._rbac_configs_cache: Dict[str, List[RBACConfig]] = {}
-        self._tool_to_mcp_map: Dict[str, str] = {}
+        self._tool_to_mcp_map: Dict[str, str] = {}  # tool_name → mcp_id mapping for routing
 
         logger.info("MCP Discovery Service initialized", mcp_count=len(self.mcp_endpoints))
     

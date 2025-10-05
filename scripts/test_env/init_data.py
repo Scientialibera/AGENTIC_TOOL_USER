@@ -619,270 +619,293 @@ class DataInitializer:
                 print('   Failed to upload schema file', fname, 'error:', e)
 
     async def upload_dummy_graph_data(self):
-        """Upload dummy account and relationship data to Gremlin graph."""
-        print("  Uploading dummy graph data...")
-        # Quick availability probe: try a lightweight query and gracefully
-        # skip graph upload if the Gremlin graph/collection is not provisioned.
+        """Upload demo graph data: accounts, SOWs, offerings, and technology stack (no extra noise)."""
+        print("  Uploading demo graph data (accounts, sows, offerings, tech)...")
+
+        # 1) Availability probe
         try:
             await self.gremlin_client.execute_query("g.V().limit(1)")
         except (RetryError, GremlinServerError, Exception) as e:
-            # tenacity wraps the final exception in RetryError; unwrap if possible
             inner = e
             if isinstance(e, RetryError) and hasattr(e, 'last_attempt'):
                 try:
                     inner = e.last_attempt.exception()
                 except Exception:
                     inner = e
-
             msg = str(inner)
-            # Detect common auth/credential misconfiguration messages and give actionable guidance
-            if "DefaultAzureCredential failed" in msg or "Unable to get authority configuration" in msg or 'credential' in msg.lower():
-                print("  Gremlin authentication failed (DefaultAzureCredential). Skipping graph upload.")
+            if ("DefaultAzureCredential failed" in msg
+                or "Unable to get authority configuration" in msg
+                or "credential" in msg.lower()):
+                print("  Gremlin auth failed (DefaultAzureCredential). Skipping graph upload.")
                 print("   -> Ensure you're logged in (az login) or running with a managed identity that has data-plane access to Cosmos DB.")
-                # The project enforces AAD-based auth (DefaultAzureCredential / Managed Identity).
-                # Do NOT enable or rely on key-based credentials. Remove any AZURE_COSMOS_GREMLIN_PASSWORD or other secrets from your .env.
                 return
             if "NotFound" in msg or "404" in msg:
-                print("  Gremlin graph or collection not found. Skipping graph upload.")
+                print("  Gremlin graph/collection not found. Skipping graph upload.")
                 print("   -> Create the Gremlin graph (relationships) or run scripts/infra/deploy.ps1 and re-run this initializer.")
                 return
-            else:
-                print(f"  Gremlin check failed: {inner}")
-                # Treat as non-fatal but stop graph upload
-                return
+            print(f"  Gremlin check failed: {inner}")
+            return
 
         try:
-            # Optionally clear existing graph data. By default we clear so
-            # the graph contains only the nodes/edges created by this initializer.
-            # Set the environment variable INIT_DATA_CLEAR_GRAPH to 'false' to
-            # preserve existing data.
+            # 2) Clear graph (opt-in via env)
             init_clear = os.environ.get('INIT_DATA_CLEAR_GRAPH', 'true').lower() in ('1', 'true', 'yes')
             if init_clear:
                 print("   Clearing existing graph data (INIT_DATA_CLEAR_GRAPH=true)...")
                 await self.gremlin_client.execute_query("g.E().drop()")
                 await self.gremlin_client.execute_query("g.V().drop()")
 
-            # Add account vertices with sales-relevant properties
+            # 3) Accounts (normalized numerics)
             accounts = [
                 {
-                    "id": "acc_salesforce", 
-                    "name": "Salesforce Inc", 
-                    "type": "CRM", 
+                    "id": "acc_salesforce",
+                    "name": "Salesforce Inc",
+                    "type": "CRM",
                     "tier": "Enterprise",
                     "industry": "Technology",
-                    "revenue": "34.1B",
-                    "employees": "79000",
+                    "revenue": 34100000000.0,   # 34.1B -> numeric
+                    "employees": 79000,
                     "status": "Active Customer",
-                    "contract_value": "2.5M",
+                    "contract_value": 2500000.0, # 2.5M -> numeric
                     "renewal_date": "2025-03-15"
                 },
                 {
-                    "id": "acc_microsoft", 
-                    "name": "Microsoft Corporation", 
-                    "type": "Enterprise Software", 
+                    "id": "acc_microsoft",
+                    "name": "Microsoft Corporation",
+                    "type": "Enterprise Software",
                     "tier": "Strategic",
                     "industry": "Technology",
-                    "revenue": "245.1B",
-                    "employees": "221000",
+                    "revenue": 245100000000.0,
+                    "employees": 221000,
                     "status": "Prospect",
-                    "contract_value": "0",
+                    "contract_value": 0.0,
                     "renewal_date": None
                 },
                 {
-                    "id": "acc_oracle", 
-                    "name": "Oracle Corporation", 
-                    "type": "Database", 
+                    "id": "acc_oracle",
+                    "name": "Oracle Corporation",
+                    "type": "Database",
                     "tier": "Enterprise",
                     "industry": "Technology",
-                    "revenue": "52.9B",
-                    "employees": "164000",
+                    "revenue": 52900000000.0,
+                    "employees": 164000,
                     "status": "Active Customer",
-                    "contract_value": "1.8M",
+                    "contract_value": 1800000.0,
                     "renewal_date": "2024-11-30"
                 },
                 {
-                    "id": "acc_aws", 
-                    "name": "Amazon Web Services", 
-                    "type": "Cloud Infrastructure", 
+                    "id": "acc_aws",
+                    "name": "Amazon Web Services",
+                    "type": "Cloud Infrastructure",
                     "tier": "Competitor",
                     "industry": "Cloud Computing",
-                    "revenue": "90.0B",
-                    "employees": "1600000",
+                    "revenue": 90000000000.0,
+                    "employees": 1600000,
                     "status": "Competitor",
-                    "contract_value": "0",
+                    "contract_value": 0.0,
                     "renewal_date": None
                 },
                 {
-                    "id": "acc_google", 
-                    "name": "Google LLC", 
-                    "type": "Cloud Services", 
+                    "id": "acc_google",
+                    "name": "Google LLC",
+                    "type": "Cloud Services",
                     "tier": "Competitor",
                     "industry": "Technology",
-                    "revenue": "307.4B",
-                    "employees": "190000",
+                    "revenue": 307400000000.0,
+                    "employees": 190000,
                     "status": "Competitor",
-                    "contract_value": "0",
+                    "contract_value": 0.0,
                     "renewal_date": None
                 },
                 {
-                    "id": "acc_sap", 
-                    "name": "SAP SE", 
-                    "type": "ERP", 
+                    "id": "acc_sap",
+                    "name": "SAP SE",
+                    "type": "ERP",
                     "tier": "Enterprise",
                     "industry": "Enterprise Software",
-                    "revenue": "33.8B",
-                    "employees": "111000",
+                    "revenue": 33800000000.0,
+                    "employees": 111000,
                     "status": "Prospect",
-                    "contract_value": "0",
+                    "contract_value": 0.0,
                     "renewal_date": None
                 }
             ]
-            
-            for account in accounts:
-                query = f"""
-                g.addV('account')
-                 .property('id', '{account["id"]}')
-                 .property('partitionKey', '{account["id"]}')
-                 .property('name', '{account["name"]}')
-                 .property('type', '{account["type"]}')
-                 .property('tier', '{account["tier"]}')
-                 .property('industry', '{account["industry"]}')
-                 .property('revenue', '{account["revenue"]}')
-                 .property('employees', {account["employees"]})
-                 .property('status', '{account["status"]}')
-                 .property('contract_value', '{account["contract_value"]}')
-                 .property('renewal_date', '{account["renewal_date"] or ""}')
-                """
-                await self.gremlin_client.execute_query(query)
-                print(f"   Added account: {account['name']} ({account['status']})")
-            
-            # Add account-account relationships only if explicitly enabled.
-            # To skip adding these legacy/extra relationships set
-            # INIT_DATA_KEEP_ACCOUNT_RELATIONSHIPS=false (default).
-            keep_rels = os.environ.get('INIT_DATA_KEEP_ACCOUNT_RELATIONSHIPS', 'false').lower() in ('1', 'true', 'yes')
-            if keep_rels:
-                relationships = [
-                    # Current customer relationships
-                    {"from": "acc_salesforce", "to": "acc_microsoft", "type": "integrates_with", "strength": 0.9, "description": "Salesforce integrates with Microsoft 365"},
-                    {"from": "acc_salesforce", "to": "acc_aws", "type": "hosted_on", "strength": 0.8, "description": "Salesforce CRM hosted on AWS"},
-                    {"from": "acc_oracle", "to": "acc_aws", "type": "migrating_to", "strength": 0.7, "description": "Oracle considering AWS migration"},
-                    
-                    # Competitive relationships
-                    {"from": "acc_microsoft", "to": "acc_google", "type": "competes_with", "strength": 0.8, "description": "Direct competition in cloud services"},
-                    {"from": "acc_aws", "to": "acc_google", "type": "competes_with", "strength": 0.9, "description": "Direct competition in cloud infrastructure"},
-                    {"from": "acc_microsoft", "to": "acc_aws", "type": "competes_with", "strength": 0.7, "description": "Competition in enterprise cloud"},
-                    
-                    # Partnership opportunities
-                    {"from": "acc_salesforce", "to": "acc_sap", "type": "potential_partnership", "strength": 0.6, "description": "SAP-Salesforce integration opportunity"},
-                    {"from": "acc_oracle", "to": "acc_sap", "type": "competes_with", "strength": 0.8, "description": "Direct competition in ERP space"},
-                    
-                    # Cross-sell opportunities
-                    {"from": "acc_salesforce", "to": "acc_oracle", "type": "potential_integration", "strength": 0.5, "description": "Salesforce + Oracle database integration"},
-                    {"from": "acc_microsoft", "to": "acc_sap", "type": "integrates_with", "strength": 0.7, "description": "Microsoft-SAP partnership"}
-                ]
 
-                for rel in relationships:
-                    query = f"""
-                    g.V('{rel["from"]}')
-                     .addE('{rel["type"]}')
-                     .to(g.V('{rel["to"]}'))
-                     .property('strength', {rel["strength"]})
-                     .property('description', '{rel["description"]}')
-                    """
-                    await self.gremlin_client.execute_query(query)
-                    print(f"   Added relationship: {rel['from']} -{rel['type']}-> {rel['to']} ({rel['description']})")
-
-            # --- New: Add Statements of Work (SOW) connected to accounts ---
-            # We intentionally do NOT create 'offering' vertices by default so the
-            # graph contains only 'account' and 'sow' vertices and their edges.
-            print("   Adding sample Statements of Work (SOWs)...")
-
-            # Sample SOWs (work done for accounts). Each SOW stores its offering
-            # as a property rather than a separate vertex to keep the graph
-            # limited to accounts and sows.
-            sows = [
-                # --- AI Chatbots (now across multiple accounts) ---
-                {"id": "sow_msft_ai_chatbot_2023",      "account": "acc_microsoft",  "title": "Microsoft AI Chatbot PoC",              "offering": "ai_chatbot",        "year": 2023, "value": "250000"},
-                {"id": "sow_salesforce_ai_chatbot_2023","account": "acc_salesforce",  "title": "Salesforce Service Chatbot Rollout",    "offering": "ai_chatbot",        "year": 2023, "value": "300000"},
-                {"id": "sow_google_ai_chatbot_2024",    "account": "acc_google",      "title": "Google Customer Support Chatbot",       "offering": "ai_chatbot",        "year": 2024, "value": "410000"},
-                {"id": "sow_aws_ai_chatbot_2022",       "account": "acc_aws",         "title": "AWS Internal Helpdesk Bot",             "offering": "ai_chatbot",        "year": 2022, "value": "150000"},
-                {"id": "sow_sap_ai_chatbot_2023",       "account": "acc_sap",         "title": "SAP Field Service Chatbot",             "offering": "ai_chatbot",        "year": 2023, "value": "210000"},
-
-                # --- Existing non-chatbot samples you already had ---
-                {"id": "sow_msft_fabric_2024",          "account": "acc_microsoft",   "title": "Microsoft Fabric Deployment",           "offering": "fabric_deployment", "year": 2024, "value": "560000"},
-                {"id": "sow_salesforce_dynamics_2022",  "account": "acc_salesforce",   "title": "Salesforce Dynamics Integration",       "offering": "dynamics",          "year": 2022, "value": "180000"},
-                {"id": "sow_oracle_migration_2024",     "account": "acc_oracle",       "title": "Oracle Data Migration",                 "offering": "data_migration",    "year": 2024, "value": "320000"},
-                {"id": "sow_sap_fabric_2023",           "account": "acc_sap",          "title": "SAP Fabric Proof of Value",             "offering": "fabric_deployment", "year": 2023, "value": "120000"},
-            ]
-
-            for sow in sows:
+            for a in accounts:
                 q = f"""
-                g.addV('sow')
-                 .property('id', '{sow['id']}')
-                 .property('partitionKey', '{sow['id']}')
-                 .property('title', "{sow['title']}")
-                 .property('offering', '{sow['offering']}')
-                 .property('year', {sow['year']})
-                 .property('value', '{sow['value']}')
+                g.addV('account')
+                .property('id','{a["id"]}')
+                .property('partitionKey','{a["id"]}')
+                .property('name','{a["name"]}')
+                .property('type','{a["type"]}')
+                .property('tier','{a["tier"]}')
+                .property('industry','{a["industry"]}')
+                .property('revenue',{a["revenue"]})
+                .property('employees',{a["employees"]})
+                .property('status','{a["status"]}')
+                .property('contract_value',{a["contract_value"]})
+                .property('renewal_date','{a["renewal_date"] or ""}')
                 """
                 await self.gremlin_client.execute_query(q)
-                # Link account -> sow
+                print(f"   Added account: {a['name']}")
+
+            # 4) Offerings (promoted to vertices)
+            offerings = [
+                {"id": "off_ai_chatbot",       "name": "ai_chatbot",        "category": "AI"},
+                {"id": "off_fabric_deployment","name": "fabric_deployment", "category": "Data"},
+                {"id": "off_dynamics",         "name": "dynamics",          "category": "CRM"},
+                {"id": "off_data_migration",   "name": "data_migration",    "category": "Data"}
+            ]
+            for o in offerings:
+                q = f"""
+                g.addV('offering')
+                .property('id','{o['id']}')
+                .property('partitionKey','{o['id']}')
+                .property('name','{o['name']}')
+                .property('category','{o['category']}')
+                """
+                await self.gremlin_client.execute_query(q)
+            print("   Added offering vertices.")
+
+            # 5) Technology stack
+            techs = [
+                {"id":"tech_azure_openai","name":"Azure OpenAI","category":"LLM"},
+                {"id":"tech_aws_bedrock","name":"AWS Bedrock","category":"LLM"},
+                {"id":"tech_gcp_dialogflow","name":"Google Dialogflow","category":"Conversational"},
+                {"id":"tech_ms_teams","name":"Microsoft Teams","category":"Collaboration"},
+                {"id":"tech_servicenow","name":"ServiceNow","category":"ITSM"},
+                {"id":"tech_twilio","name":"Twilio","category":"Comms"},
+                {"id":"tech_ms_fabric","name":"Microsoft Fabric","category":"Data"},
+                {"id":"tech_snowflake","name":"Snowflake","category":"Data"},
+                {"id":"tech_databricks","name":"Databricks","category":"Data"},
+                {"id":"tech_ms_dynamics","name":"Microsoft Dynamics 365","category":"CRM"}
+            ]
+            for t in techs:
+                q = f"""
+                g.addV('tech')
+                .property('id','{t['id']}')
+                .property('partitionKey','{t['id']}')
+                .property('name','{t['name']}')
+                .property('category','{t['category']}')
+                """
+                await self.gremlin_client.execute_query(q)
+            print("   Added tech vertices.")
+
+            # 6) SOWs (keep offering as a property for convenience, but we also link to offering vertex)
+            sows = [
+                {"id":"sow_msft_ai_chatbot_2023",       "account":"acc_microsoft",  "title":"Microsoft AI Chatbot PoC",            "offering":"ai_chatbot",        "year":2023, "value":250000},
+                {"id":"sow_salesforce_ai_chatbot_2023", "account":"acc_salesforce", "title":"Salesforce Service Chatbot Rollout",  "offering":"ai_chatbot",        "year":2023, "value":300000},
+                {"id":"sow_google_ai_chatbot_2024",     "account":"acc_google",     "title":"Google Customer Support Chatbot",     "offering":"ai_chatbot",        "year":2024, "value":410000},
+                {"id":"sow_aws_ai_chatbot_2022",        "account":"acc_aws",        "title":"AWS Internal Helpdesk Bot",           "offering":"ai_chatbot",        "year":2022, "value":150000},
+                {"id":"sow_sap_ai_chatbot_2023",        "account":"acc_sap",        "title":"SAP Field Service Chatbot",           "offering":"ai_chatbot",        "year":2023, "value":210000},
+
+                {"id":"sow_msft_fabric_2024",           "account":"acc_microsoft",  "title":"Microsoft Fabric Deployment",         "offering":"fabric_deployment", "year":2024, "value":560000},
+                {"id":"sow_salesforce_dynamics_2022",   "account":"acc_salesforce", "title":"Salesforce Dynamics Integration",      "offering":"dynamics",          "year":2022, "value":180000},
+                {"id":"sow_oracle_migration_2024",      "account":"acc_oracle",     "title":"Oracle Data Migration",                "offering":"data_migration",    "year":2024, "value":320000},
+                {"id":"sow_sap_fabric_2023",            "account":"acc_sap",        "title":"SAP Fabric Proof of Value",            "offering":"fabric_deployment", "year":2023, "value":120000},
+            ]
+            # offering name -> offering vertex id
+            offering_id_by_name = {o["name"]: o["id"] for o in offerings}
+
+            for sow in sows:
+                title_escaped = sow["title"].replace('"', '\\"')
+                q = f"""
+                g.addV('sow')
+                .property('id','{sow['id']}')
+                .property('partitionKey','{sow['id']}')
+                .property('title',"{title_escaped}")
+                .property('offering','{sow['offering']}')
+                .property('year',{sow['year']})
+                .property('value',{sow['value']})
+                """
+                await self.gremlin_client.execute_query(q)
+
+                # account -> sow
                 link_q = f"""
                 g.V('{sow['account']}')
-                 .addE('has_sow')
-                 .to(g.V('{sow['id']}'))
-                 .property('role', 'contract')
+                .addE('has_sow')
+                .to(g.V('{sow['id']}'))
+                .property('role','contract')
                 """
                 await self.gremlin_client.execute_query(link_q)
-                print(f"     Added SOW: {sow['id']} (account={sow['account']}, offering={sow['offering']})")
 
-            # Similarity / related work edges between SOWs to help find similar engagements
-            # e.g., MSFT AI Chatbot SOW is similar to Salesforce Dynamics integration (if both are conversational projects)
+                # sow -> offering vertex
+                off_id = offering_id_by_name[sow["offering"]]
+                off_q = f"g.V('{sow['id']}').addE('has_offering').to(g.V('{off_id}'))"
+                await self.gremlin_client.execute_query(off_q)
+
+            print("   Added SOWs and linked offerings.")
+
+            # 7) Account-level tech signals
+            account_tech = {
+                "acc_microsoft":  ["tech_ms_teams","tech_ms_fabric","tech_azure_openai","tech_ms_dynamics"],
+                "acc_salesforce": ["tech_servicenow","tech_twilio","tech_aws_bedrock","tech_ms_dynamics"],
+                "acc_google":     ["tech_gcp_dialogflow","tech_snowflake"],
+                "acc_aws":        ["tech_aws_bedrock","tech_twilio"],
+                "acc_oracle":     ["tech_databricks","tech_snowflake"],
+                "acc_sap":        ["tech_servicenow","tech_ms_fabric"]
+            }
+            for acc_id, tech_ids in account_tech.items():
+                for tid in tech_ids:
+                    q = f"g.V('{acc_id}').addE('uses_tech').to(g.V('{tid}')).property('scope','org').property('confidence',0.8)"
+                    await self.gremlin_client.execute_query(q)
+            print("   Linked accounts to org-level tech stack.")
+
+            # 8) SOW-level tech usage
+            sow_tech = {
+                "sow_msft_ai_chatbot_2023":      ["tech_azure_openai","tech_ms_teams"],
+                "sow_salesforce_ai_chatbot_2023":["tech_aws_bedrock","tech_twilio","tech_servicenow"],
+                "sow_google_ai_chatbot_2024":    ["tech_gcp_dialogflow","tech_twilio"],
+                "sow_aws_ai_chatbot_2022":       ["tech_aws_bedrock"],
+                "sow_sap_ai_chatbot_2023":       ["tech_azure_openai","tech_servicenow"],
+                "sow_msft_fabric_2024":          ["tech_ms_fabric"],
+                "sow_salesforce_dynamics_2022":  ["tech_ms_dynamics","tech_twilio"],
+                "sow_oracle_migration_2024":     ["tech_snowflake","tech_databricks"],
+                "sow_sap_fabric_2023":           ["tech_ms_fabric"]
+            }
+            for sow_id, tech_ids in sow_tech.items():
+                for tid in tech_ids:
+                    q = f"g.V('{sow_id}').addE('uses_tech').to(g.V('{tid}')).property('scope','project').property('confidence',0.9)"
+                    await self.gremlin_client.execute_query(q)
+            print("   Linked SOWs to project-level tech.")
+
+            # 9) SOW similarity (unchanged)
             sow_similarities = [
-                # --- AI chatbot clusters (more edges = more matches) ---
-                {"a": "sow_msft_ai_chatbot_2023",       "b": "sow_salesforce_ai_chatbot_2023", "score": 0.85, "note": "enterprise support chatbots"},
-                {"a": "sow_msft_ai_chatbot_2023",       "b": "sow_google_ai_chatbot_2024",     "score": 0.80, "note": "customer service chatbots"},
-                {"a": "sow_salesforce_ai_chatbot_2023", "b": "sow_aws_ai_chatbot_2022",        "score": 0.70, "note": "IT/helpdesk assistant use cases"},
-                {"a": "sow_google_ai_chatbot_2024",     "b": "sow_sap_ai_chatbot_2023",        "score": 0.65, "note": "multilingual bot UX"},
-                {"a": "sow_aws_ai_chatbot_2022",        "b": "sow_sap_ai_chatbot_2023",        "score": 0.60, "note": "FAQ intent modeling overlap"},
-
-                # --- Keep/extend your original non-chatbot links ---
-                {"a": "sow_msft_ai_chatbot_2023",       "b": "sow_salesforce_dynamics_2022",   "score": 0.60, "note": "both involve conversational integration"},
-                {"a": "sow_msft_fabric_2024",           "b": "sow_sap_fabric_2023",            "score": 0.80, "note": "both are Fabric deployments"},
-                {"a": "sow_oracle_migration_2024",      "b": "sow_salesforce_dynamics_2022",   "score": 0.40, "note": "data migration aspects overlap"},
+                {"a":"sow_msft_ai_chatbot_2023","b":"sow_salesforce_ai_chatbot_2023","score":0.85,"note":"enterprise support chatbots"},
+                {"a":"sow_msft_ai_chatbot_2023","b":"sow_google_ai_chatbot_2024","score":0.80,"note":"customer service chatbots"},
+                {"a":"sow_salesforce_ai_chatbot_2023","b":"sow_aws_ai_chatbot_2022","score":0.70,"note":"IT/helpdesk assistant"},
+                {"a":"sow_google_ai_chatbot_2024","b":"sow_sap_ai_chatbot_2023","score":0.65,"note":"multilingual bot UX"},
+                {"a":"sow_aws_ai_chatbot_2022","b":"sow_sap_ai_chatbot_2023","score":0.60,"note":"FAQ intent modeling overlap"},
+                {"a":"sow_msft_ai_chatbot_2023","b":"sow_salesforce_dynamics_2022","score":0.60,"note":"conversational integration"},
+                {"a":"sow_msft_fabric_2024","b":"sow_sap_fabric_2023","score":0.80,"note":"Fabric deployments"},
+                {"a":"sow_oracle_migration_2024","b":"sow_salesforce_dynamics_2022","score":0.40,"note":"data migration overlap"},
             ]
-
             for sim in sow_similarities:
                 q = f"""
                 g.V('{sim['a']}')
-                 .addE('similar_to')
-                 .to(g.V('{sim['b']}'))
-                 .property('score', {sim['score']})
-                 .property('note', "{sim['note']}")
+                .addE('similar_to')
+                .to(g.V('{sim['b']}'))
+                .property('score',{sim['score']})
+                .property('note',"{sim['note']}")
                 """
                 await self.gremlin_client.execute_query(q)
-                print(f"     Linked similar SOWs: {sim['a']} ~ {sim['b']} (score={sim['score']})")
-            
-            print("   Graph data upload completed")
+            print("   Linked similar SOWs.")
+
+            print("   Graph data upload completed.")
 
         except (RetryError, GremlinServerError) as e:
-            # Unwrap RetryError if needed for nicer messaging
             inner = e
             if isinstance(e, RetryError) and hasattr(e, 'last_attempt'):
                 try:
                     inner = e.last_attempt.exception()
                 except Exception:
                     inner = e
-
             print(f"    Gremlin server error while uploading graph data: {inner}")
             print("   -> If this is a NotFound error, ensure the Gremlin graph/collection exists. See scripts/infra/deploy.ps1.")
-            # Do not raise - treat as non-fatal for init
             return
-
         except Exception as e:
             print(f"   Failed to upload graph data: {e}")
-            # Preserve original behavior for unexpected errors
             raise
+
 
     async def ensure_cosmos_containers(self):
         """Best-effort creation of Cosmos DB SQL containers using az CLI.

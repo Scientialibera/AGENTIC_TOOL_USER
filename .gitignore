@@ -4,3 +4,14 @@ chatbot/.env
 chatbot/src/chatbot/.env
 NUL
 agentic_framework/frontend/.env
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.so
+*.egg
+*.egg-info/
+dist/
+build/

@@ -78,7 +78,22 @@ class AzureOpenAIClient:
         **kwargs
     ) -> Dict[str, Any]:
         """Create a chat completion."""
+        import time
+        start_time = time.time()
+
         try:
+            # Log the LLM request
+            tool_names = [t.get("function", {}).get("name") for t in (tools or [])] if tools else None
+            logger.info(
+                "🤖 LLM REQUEST START",
+                deployment=self.settings.chat_deployment,
+                message_count=len(messages),
+                has_tools=bool(tools),
+                tool_count=len(tools) if tools else 0,
+                tool_names=tool_names[:5] if tool_names and len(tool_names) > 5 else tool_names,  # Limit to 5 for readability
+                tool_choice=tool_choice
+            )
+
             client = await self._get_client()
 
             # Try the request, refresh token if we get 401
@@ -86,6 +101,20 @@ class AzureOpenAIClient:
                 response = await self._create_completion(
                     client, messages, temperature, max_tokens, tools, tool_choice, **kwargs
                 )
+
+                # Log successful response with timing
+                elapsed_ms = int((time.time() - start_time) * 1000)
+                tool_calls = response.get("choices", [{}])[0].get("message", {}).get("tool_calls")
+                called_tools = [tc.get("function", {}).get("name") for tc in (tool_calls or [])] if tool_calls else []
+                logger.info(
+                    "✅ LLM RESPONSE COMPLETE",
+                    duration_ms=elapsed_ms,
+                    has_tool_calls=bool(tool_calls),
+                    tool_call_count=len(tool_calls) if tool_calls else 0,
+                    called_tools=called_tools,
+                    finish_reason=response.get("choices", [{}])[0].get("finish_reason")
+                )
+
                 return response
             except Exception as e:
                 # Check if it's a 401 auth error
@@ -98,12 +127,17 @@ class AzureOpenAIClient:
                     response = await self._create_completion(
                         client, messages, temperature, max_tokens, tools, tool_choice, **kwargs
                     )
+
+                    # Log successful retry
+                    elapsed_ms = int((time.time() - start_time) * 1000)
+                    logger.info("✅ LLM RESPONSE COMPLETE (after retry)", duration_ms=elapsed_ms)
                     return response
                 else:
                     raise
 
         except Exception as e:
-            logger.error("Failed to create chat completion", error=str(e))
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            logger.error("❌ LLM REQUEST FAILED", error=str(e), duration_ms=elapsed_ms)
             raise
 
     async def _create_completion(

@@ -645,8 +645,11 @@ body {
   overflow-x: auto;
   white-space: pre-wrap;
   word-wrap: break-word;
+  word-break: break-all;
+  overflow-wrap: anywhere;
   max-height: 400px;
   overflow-y: auto;
+  line-height: 1.5;
 }
 
 .detail-timestamp {
