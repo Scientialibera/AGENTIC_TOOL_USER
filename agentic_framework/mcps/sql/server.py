@@ -29,7 +29,7 @@ from shared.auth_provider import create_auth_provider
 # CONSTANTS
 # ============================================================================
 MCP_SERVER_NAME = "SQL MCP Server"
-MCP_SERVER_PORT = 8001
+MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8001"))  # Server port (from env or default 8001)
 PROMPT_ID = "sql_agent_system"
 AGENT_TYPE = "sql"  # Used to match function patterns like sql_*_function
 SQL_SCHEMA_CONTAINER = "sql_schema"  # Container name for SQL schema metadata

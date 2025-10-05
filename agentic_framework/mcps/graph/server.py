@@ -29,7 +29,7 @@ from shared.auth_provider import create_auth_provider
 # CONSTANTS
 # ============================================================================
 MCP_SERVER_NAME = "Graph MCP Server"
-MCP_SERVER_PORT = 8002
+MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8002"))  # Server port (from env or default 8002)
 PROMPT_ID = "graph_agent_system"
 AGENT_TYPE = "graph"  # Used to match function patterns like graph_*_function
 DEFAULT_QUERY_LIMIT = 100

@@ -26,7 +26,7 @@ from shared.auth_provider import create_auth_provider
 MCP_SERVER_NAME = "Code Interpreter MCP Server"
 TRANSPORT = "http"  # MCP transport protocol
 HOST = "0.0.0.0"  # Server host
-MCP_SERVER_PORT = 8003  # Server port
+MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8003"))  # Server port (from env or default 8003)
 
 # Agent Configuration
 AGENT_TYPE = "interpreter"

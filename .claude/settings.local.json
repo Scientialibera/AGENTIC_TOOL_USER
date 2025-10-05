@@ -8,7 +8,9 @@
       "Bash(az containerapp update:*)",
       "Bash(timeout:*)",
       "Bash(Start-Sleep -Seconds 30)",
-      "Bash(pwsh:*)"
+      "Bash(pwsh:*)",
+      "Bash(tee:*)",
+      "Bash(az containerapp revision restart:*)"
     ],
     "deny": [],
     "ask": []

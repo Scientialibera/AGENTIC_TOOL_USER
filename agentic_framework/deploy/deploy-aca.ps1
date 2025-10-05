@@ -287,12 +287,13 @@ foreach ($mcp in $mcpServers) {
     # Build env vars array for this MCP
     $mcpEnvVarsList = @()
     $mcpEnvVarsList += "APP_NAME=$($mcp.AppName)"
-    
+    $mcpEnvVarsList += "MCP_PORT=$($mcp.Port)"  # Set the port for this MCP
+
     # Add common env vars
     foreach ($key in $commonEnvVars.Keys) {
         $mcpEnvVarsList += "$key=$($commonEnvVars[$key])"
     }
-    
+
     # Add MCP-specific env vars if they exist
     if ($mcpSpecificEnvVars.ContainsKey($mcp.Name)) {
         foreach ($key in $mcpSpecificEnvVars[$mcp.Name].Keys) {
@@ -327,35 +328,11 @@ foreach ($mcp in $mcpServers) {
     } else {
         Write-Host "Updating existing $($mcp.Name) MCP app with new revision..." -ForegroundColor Yellow
 
-        # Create YAML config for update with command
-        $mcpYaml = @"
-properties:
-  template:
-    containers:
-    - name: $($mcp.AppName)
-      image: $($mcp.Image)
-      command:
-      - python
-      - -m
-      - mcps.$($mcp.Name).server
-      - --host
-      - "0.0.0.0"
-      - --port
-      - "$($mcp.Port)"
-      env:
-$(foreach ($envVar in $mcpEnvVarsList) {
-    $parts = $envVar -split '=', 2
-    "      - name: $($parts[0])`n        value: `"$($parts[1])`""
-})
-"@
-
-        $yamlPath = "deploy/$($mcp.AppName)-update.yaml"
-        $mcpYaml | Out-File -FilePath $yamlPath -Encoding UTF8
-
         az containerapp update `
             --name $mcp.AppName `
             --resource-group $ResourceGroup `
-            --yaml $yamlPath
+            --image $mcp.Image `
+            --set-env-vars $mcpEnvVarsList
         
         # Deactivate old revisions
         Write-Host "Deactivating old $($mcp.Name) MCP revisions..." -ForegroundColor Gray
@@ -388,7 +365,7 @@ foreach ($mcp in $mcpServers) {
 Write-Host "`n Deploying Orchestrator..." -ForegroundColor Cyan
 
 # Build MCP_ENDPOINTS JSON dynamically from discovered MCPs
-$mcpEndpointsJson = ($mcpEndpointsHash | ConvertTo-Json -Compress).Replace('"', '`"')
+$mcpEndpointsJson = ($mcpEndpointsHash | ConvertTo-Json -Compress)
 
 # Build LIST_OF_MCPS dynamically (comma-separated list of mcp names)
 $listOfMcps = ($mcpServers | ForEach-Object { "$($_.Name)_mcp" }) -join ","
