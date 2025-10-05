@@ -3,7 +3,12 @@
     "allow": [
       "Bash(python:*)",
       "Bash(curl:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(az containerapp logs show:*)",
+      "Bash(az containerapp update:*)",
+      "Bash(timeout:*)",
+      "Bash(Start-Sleep -Seconds 30)",
+      "Bash(pwsh:*)"
     ],
     "deny": [],
     "ask": []

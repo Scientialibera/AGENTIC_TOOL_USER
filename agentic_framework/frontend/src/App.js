@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import './App.css';
 
 const API_URL = process.env.REACT_APP_API_URL || 'https://orchestrator.calmpebble-eb198128.westus2.azurecontainerapps.io';
@@ -244,7 +246,13 @@ Try: Right-click page → Inspect → Network tab to see the actual request.`;
                   </span>
                 )}
               </div>
-              <div className="message-content">{msg.content}</div>
+              <div className="message-content">
+                {msg.role === 'assistant' ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                ) : (
+                  msg.content
+                )}
+              </div>
               {msg.metadata && expandedLineage === idx && msg.metadata.tool_lineage && (
                 <div className="tool-lineage">
                   <h4>🔍 Tool Execution Lineage</h4>
@@ -276,8 +284,8 @@ Try: Right-click page → Inspect → Network tab to see the actual request.`;
                               <span className={`mcp-badge mcp-${tool.mcp_server?.replace('_mcp', '') || 'default'}`}>
                                 {tool.mcp_server === 'sql_mcp' && '🗄️'}
                                 {tool.mcp_server === 'graph_mcp' && '🕸️'}
-                                {tool.mcp_server === 'interpreter_mcp' && '�'}
-                                {!['sql_mcp', 'graph_mcp', 'interpreter_mcp'].includes(tool.mcp_server) && '�📊'}
+                                {tool.mcp_server === 'interpreter_mcp' && '🐍'}
+                                {!['sql_mcp', 'graph_mcp', 'interpreter_mcp'].includes(tool.mcp_server) && '📊'}
                                 {' '}
                                 {tool.mcp_server || 'MCP'}
                               </span>
@@ -307,7 +315,7 @@ Try: Right-click page → Inspect → Network tab to see the actual request.`;
                               )}
                               
                               {/* Special handling for code interpreter results */}
-                              {tool.tool_name === 'interpreter_agent' && tool.output && typeof tool.output === 'object' && tool.output.code && (
+                              {tool.tool_name === 'interpreter_agent' && tool.output && typeof tool.output === 'object' && tool.output.success && tool.output.code && (
                                 <div className="detail-section code-interpreter-section">
                                   <div className="detail-label">💻 Code Executed</div>
                                   <pre className="detail-code python-code">
@@ -341,7 +349,7 @@ Try: Right-click page → Inspect → Network tab to see the actual request.`;
                               )}
                               
                               {/* Show full output for non-interpreter or as fallback */}
-                              {tool.output && (!tool.tool_name || tool.tool_name !== 'interpreter_agent' || typeof tool.output !== 'object' || !tool.output.code) && (
+                              {tool.output && (!tool.tool_name || tool.tool_name !== 'interpreter_agent' || typeof tool.output !== 'object' || !tool.output.success || !tool.output.code) && (
                                 <div className="detail-section">
                                   <div className="detail-label">📤 Full Output</div>
                                   <pre className="detail-code">{typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}</pre>

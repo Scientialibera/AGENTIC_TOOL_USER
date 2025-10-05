@@ -36,8 +36,8 @@ Write-Host "Registry: $ContainerRegistry" -ForegroundColor Yellow
 $OrchestratorApp = "orchestrator"
 $FrontendApp = "salesforce-frontend"
 
-$OrchestratorImage = "$ContainerRegistry.azurecr.io/orchestrator:$ImageTag"
-$FrontendImage = "$ContainerRegistry.azurecr.io/salesforce-frontend:$ImageTag"
+$OrchestratorImage = "${ContainerRegistry}.azurecr.io/orchestrator:${ImageTag}"
+$FrontendImage = "${ContainerRegistry}.azurecr.io/salesforce-frontend:${ImageTag}"
 
 # ============================================================================
 # DYNAMIC MCP DISCOVERY
@@ -45,7 +45,7 @@ $FrontendImage = "$ContainerRegistry.azurecr.io/salesforce-frontend:$ImageTag"
 Write-Host "`n Discovering MCP servers..." -ForegroundColor Cyan
 
 # Get the agentic_framework directory
-$buildDir = Split-Path -Parent $EnvFile
+$buildDir = if ($EnvFile -match '^[^/\\]+$') { Get-Location } else { Split-Path -Parent $EnvFile }
 $agenticFrameworkDir = Join-Path $buildDir "agentic_framework"
 $mcpsDir = Join-Path $agenticFrameworkDir "mcps"
 
@@ -61,7 +61,7 @@ $startPort = 8001  # MCPs start at 8001, orchestrator is 8000
 foreach ($mcpFolder in $mcpFolders) {
     $mcpName = $mcpFolder.Name
     $mcpAppName = "$mcpName-mcp"
-    $mcpImage = "$ContainerRegistry.azurecr.io/$mcpAppName:$ImageTag"
+    $mcpImage = "${ContainerRegistry}.azurecr.io/${mcpAppName}:${ImageTag}"
     $mcpDockerfile = Join-Path $mcpFolder.FullName "Dockerfile"
     
     # Check if Dockerfile exists
@@ -246,9 +246,9 @@ Write-Host "`n Deploying MCP servers..." -ForegroundColor Cyan
 
 # Build common env vars (all MCPs need these)
 $commonEnvVars = @{
-    "DEV_MODE" = "true"
-    "BYPASS_TOKEN" = "false"
-    "DEBUG" = "false"
+    "DEV_MODE" = $envVars['DEV_MODE']
+    "BYPASS_TOKEN" = $envVars['BYPASS_TOKEN']
+    "DEBUG" = $envVars['DEBUG']
     "AZURE_CLIENT_ID" = "40aa2af4-4d0e-4664-97ce-15709f3fe34c"
     "AZURE_TENANT_ID" = $envVars['AZURE_TENANT_ID']
     "AOAI_ENDPOINT" = $envVars['AOAI_ENDPOINT']
@@ -257,6 +257,10 @@ $commonEnvVars = @{
     "AOAI_EMBEDDING_DEPLOYMENT" = $envVars['AOAI_EMBEDDING_DEPLOYMENT']
     "COSMOS_ENDPOINT" = $envVars['COSMOS_ENDPOINT']
     "COSMOS_DATABASE_NAME" = $envVars['COSMOS_DATABASE_NAME']
+    "COSMOS_PROMPTS_CONTAINER" = $envVars['COSMOS_PROMPTS_CONTAINER']
+    "COSMOS_SQL_SCHEMA_CONTAINER" = $envVars['COSMOS_SQL_SCHEMA_CONTAINER']
+    "COSMOS_ACCOUNT_RESOLVER_CONTAINER" = $envVars['COSMOS_ACCOUNT_RESOLVER_CONTAINER']
+    "COSMOS_AGENT_FUNCTIONS_CONTAINER" = $envVars['COSMOS_AGENT_FUNCTIONS_CONTAINER']
 }
 
 # MCP-specific env vars
@@ -317,14 +321,41 @@ foreach ($mcp in $mcpServers) {
             --registry-server "$ContainerRegistry.azurecr.io" `
             --registry-identity $managedIdentityId `
             --user-assigned $managedIdentityId `
-            --env-vars $mcpEnvVarsList
+            --env-vars $mcpEnvVarsList `
+            --command "python" `
+            --args "-m" "mcps.$($mcp.Name).server" "--host" "0.0.0.0" "--port" "$($mcp.Port)"
     } else {
         Write-Host "Updating existing $($mcp.Name) MCP app with new revision..." -ForegroundColor Yellow
+
+        # Create YAML config for update with command
+        $mcpYaml = @"
+properties:
+  template:
+    containers:
+    - name: $($mcp.AppName)
+      image: $($mcp.Image)
+      command:
+      - python
+      - -m
+      - mcps.$($mcp.Name).server
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "$($mcp.Port)"
+      env:
+$(foreach ($envVar in $mcpEnvVarsList) {
+    $parts = $envVar -split '=', 2
+    "      - name: $($parts[0])`n        value: `"$($parts[1])`""
+})
+"@
+
+        $yamlPath = "deploy/$($mcp.AppName)-update.yaml"
+        $mcpYaml | Out-File -FilePath $yamlPath -Encoding UTF8
+
         az containerapp update `
             --name $mcp.AppName `
             --resource-group $ResourceGroup `
-            --image $mcp.Image `
-            --set-env-vars $mcpEnvVarsList
+            --yaml $yamlPath
         
         # Deactivate old revisions
         Write-Host "Deactivating old $($mcp.Name) MCP revisions..." -ForegroundColor Gray
@@ -368,9 +399,9 @@ Write-Host "LIST_OF_MCPS: $listOfMcps" -ForegroundColor Gray
 # Build Orchestrator env vars
 $orchestratorEnvVars = @(
     "APP_NAME=orchestrator",
-    "DEV_MODE=true",  # Bypass RBAC, use dummy SQL data
-    "BYPASS_TOKEN=false",  # DO NOT bypass authentication!
-    "DEBUG=false",
+    "DEV_MODE=$($envVars['DEV_MODE'])",
+    "BYPASS_TOKEN=$($envVars['BYPASS_TOKEN'])",
+    "DEBUG=$($envVars['DEBUG'])",
     "AZURE_CLIENT_ID=40aa2af4-4d0e-4664-97ce-15709f3fe34c",  # Managed identity client ID
     "AZURE_TENANT_ID=$($envVars['AZURE_TENANT_ID'])",
     "LIST_OF_MCPS=$listOfMcps",

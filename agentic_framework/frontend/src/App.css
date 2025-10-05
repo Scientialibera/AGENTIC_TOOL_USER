@@ -554,8 +554,8 @@ body {
 }
 
 .mcp-badge.mcp-graph {
-  background: linear-gradient(135deg, #f39c12 0%, #d68910 100%);
-  box-shadow: 0 2px 6px rgba(243, 156, 18, 0.3);
+  background: linear-gradient(135deg, #c0392b 0%, #922b21 100%);
+  box-shadow: 0 2px 6px rgba(192, 57, 43, 0.3);
 }
 
 .mcp-badge.mcp-interpreter {
@@ -767,3 +767,122 @@ body {
   line-height: 1.6;
   color: #555;
 }
+
+/* Markdown Styling */
+.message-content h1,
+.message-content h2,
+.message-content h3,
+.message-content h4 {
+  color: #667eea;
+  margin-top: 16px;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.message-content h1 {
+  font-size: 24px;
+  border-bottom: 2px solid #667eea;
+  padding-bottom: 8px;
+}
+
+.message-content h2 {
+  font-size: 20px;
+}
+
+.message-content h3 {
+  font-size: 18px;
+  color: #764ba2;
+}
+
+.message-content h4 {
+  font-size: 16px;
+}
+
+.message-content p {
+  margin-bottom: 12px;
+  line-height: 1.6;
+}
+
+.message-content ul,
+.message-content ol {
+  margin-left: 20px;
+  margin-bottom: 12px;
+}
+
+.message-content li {
+  margin-bottom: 6px;
+  line-height: 1.6;
+}
+
+.message-content strong {
+  font-weight: 600;
+  color: #764ba2;
+}
+
+.message-content code {
+  background: #f5f5f5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 13px;
+  color: #e74c3c;
+}
+
+.message-content pre {
+  background: #2d2d2d;
+  color: #f8f8f2;
+  padding: 16px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin-bottom: 12px;
+}
+
+.message-content pre code {
+  background: transparent;
+  padding: 0;
+  color: #f8f8f2;
+}
+
+.message-content blockquote {
+  border-left: 4px solid #667eea;
+  padding-left: 16px;
+  margin-left: 0;
+  margin-bottom: 12px;
+  color: #666;
+  font-style: italic;
+}
+
+.message-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 12px;
+}
+
+.message-content th,
+.message-content td {
+  border: 1px solid #ddd;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.message-content th {
+  background-color: #667eea;
+  color: white;
+  font-weight: 600;
+}
+
+.message-content tr:nth-child(even) {
+  background-color: #f9f9f9;
+}
+
+.message-content a {
+  color: #667eea;
+  text-decoration: none;
+  border-bottom: 1px solid #667eea;
+}
+
+.message-content a:hover {
+  color: #764ba2;
+  border-bottom-color: #764ba2;
+}
+

@@ -266,14 +266,31 @@ async def interpreter_agent(
                 "query": query
             }
 
+        # Get run steps to extract actual code executed
+        run_steps = await assistants_client.beta.threads.runs.steps.list(
+            thread_id=thread.id,
+            run_id=run.id,
+            order="asc"
+        )
+
         # Get messages from the thread
         messages_response = await assistants_client.beta.threads.messages.list(
             thread_id=thread.id,
             order="asc"
         )
 
-        # Extract code and results from assistant's messages
+        # Extract code from run steps (actual code executed by code_interpreter)
         code_executed = []
+        for step in run_steps.data:
+            if step.type == "tool_calls":
+                for tool_call in step.step_details.tool_calls:
+                    if tool_call.type == "code_interpreter":
+                        if hasattr(tool_call.code_interpreter, 'input') and tool_call.code_interpreter.input:
+                            code_executed.append(tool_call.code_interpreter.input)
+                            logger.debug("Extracted code from run step", 
+                                       code_preview=tool_call.code_interpreter.input[:100])
+
+        # Extract results from assistant's messages
         result_text = ""
         output_type = "text"
 
@@ -283,11 +300,6 @@ async def interpreter_agent(
                     if content.type == "text":
                         text_value = content.text.value
                         result_text += text_value + "\n"
-
-                        # Extract code blocks if present
-                        import re
-                        code_blocks = re.findall(r'```python\n(.*?)```', text_value, re.DOTALL)
-                        code_executed.extend(code_blocks)
 
                     elif content.type == "image_file":
                         output_type = "image"

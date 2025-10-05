@@ -200,6 +200,60 @@ async def test_code_interpreter():
         await client.beta.assistants.delete(assistant.id)
         return
     
+    # Step 6b: Get run steps to see actual code executed
+    print("\n" + "-"*70)
+    print(" Step 6b: Retrieving run steps (to see code executed)...")
+    print("-"*70)
+    
+    try:
+        run_steps = await client.beta.threads.runs.steps.list(
+            thread_id=thread.id,
+            run_id=run.id,
+            order="asc"
+        )
+        
+        print(f"✓ Retrieved {len(run_steps.data)} run steps")
+        
+        print("\n" + "="*70)
+        print(" RUN STEPS DETAILS:")
+        print("="*70)
+        
+        for idx, step in enumerate(run_steps.data, 1):
+            print(f"\n--- Step {idx} ---")
+            print(f"  ID: {step.id}")
+            print(f"  Type: {step.type}")
+            print(f"  Status: {step.status}")
+            
+            if step.type == "tool_calls":
+                print(f"  Tool Calls:")
+                for tool_call in step.step_details.tool_calls:
+                    print(f"\n    Tool Call ID: {tool_call.id}")
+                    print(f"    Type: {tool_call.type}")
+                    
+                    if tool_call.type == "code_interpreter":
+                        print(f"    Code Interpreter:")
+                        print(f"      Input (code):")
+                        if hasattr(tool_call.code_interpreter, 'input'):
+                            for line in tool_call.code_interpreter.input.split('\n'):
+                                print(f"        {line}")
+                        
+                        print(f"      Outputs:")
+                        if hasattr(tool_call.code_interpreter, 'outputs'):
+                            for output in tool_call.code_interpreter.outputs:
+                                print(f"        Type: {output.type}")
+                                if output.type == "logs":
+                                    print(f"        Logs: {output.logs}")
+                                elif output.type == "image":
+                                    print(f"        Image ID: {output.image.file_id}")
+            
+            elif step.type == "message_creation":
+                print(f"  Message Created: {step.step_details.message_creation.message_id}")
+        
+    except Exception as e:
+        print(f"✗ Error retrieving run steps: {e}")
+        import traceback
+        traceback.print_exc()
+    
     # Step 7: Get messages
     print("\n" + "-"*70)
     print(" Step 7: Retrieving assistant response...")

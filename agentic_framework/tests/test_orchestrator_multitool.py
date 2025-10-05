@@ -101,7 +101,7 @@ async def test_msft_revenue_per_employee():
 
 
 async def test_ai_chatbot_sow_analysis():
-    """Test: Get all SOWs for ai_chatbot then calculate average revenue per SOW."""
+    """Test: Get all SOWs for ai_chatbot and all sales then calculate average revenue per cleint."""
     print("\n" + "=" * 70)
     print("🔄 Test 2: Multi-Tool - AI Chatbot SOWs + Average Revenue")
     print("=" * 70)

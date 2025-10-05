@@ -354,9 +354,5 @@ if __name__ == "__main__":
     
     logger.info(f"Starting {MCP_SERVER_NAME} on {HOST}:{MCP_SERVER_PORT}")
     
-    # Set environment variables for FastMCP to use correct host/port
-    os.environ["FASTMCP_HOST"] = HOST
-    os.environ["FASTMCP_PORT"] = str(MCP_SERVER_PORT)
-    
-    # Run the MCP server - FastMCP will use the env vars
-    mcp.run(transport=TRANSPORT)
+    # Run the MCP server with explicit port configuration
+    mcp.run(transport=TRANSPORT, port=MCP_SERVER_PORT, host=HOST)
