@@ -51,9 +51,12 @@ class OrchestratorAgent:
         self.discovery_service = discovery_service
         self.unified_service = unified_service
         self.settings = settings or get_settings()
-        
+
         self.mcp_clients: Dict[str, Client] = {}
-        
+
+        # Cache for system prompt
+        self._system_prompt_cache: Optional[str] = None
+
         logger.info("Orchestrator Agent initialized")
     
     async def process_request(
@@ -252,29 +255,31 @@ class OrchestratorAgent:
         mcps: List[Dict[str, Any]]
     ) -> Optional[str]:
         """Find which MCP provides a specific tool."""
-        # Get tools and find which MCP provides this tool
-        all_tools = await self.discovery_service.get_all_available_tools()
-        
-        for tool in all_tools:
-            if tool.get("name") == tool_name:
-                return tool.get("mcp_id")
-        
+        # Use cached mapping from discovery service
+        mcp_id = self.discovery_service.get_tool_mcp_mapping(tool_name)
+        if mcp_id:
+            logger.debug("Found MCP for tool from cache", tool_name=tool_name, mcp_id=mcp_id)
+            return mcp_id
+
         # Fallback: check MCP definitions
+        logger.debug("Tool not in cache, checking MCP definitions", tool_name=tool_name)
         for mcp in mcps:
             mcp_id = mcp.get("id") if isinstance(mcp, dict) else mcp.id
             tools = mcp.get("tools", []) if isinstance(mcp, dict) else mcp.tools
             if tool_name in tools:
                 return mcp_id
-        
+
+        # Last resort: query Cosmos DB
+        logger.warning("Tool not found in cache or MCPs, querying Cosmos DB", tool_name=tool_name)
         tools = await self.cosmos_client.query_items(
             container_name=self.settings.cosmos.agent_functions_container,
             query="SELECT c.mcp_id FROM c WHERE c.name = @tool_name",
             parameters=[{"name": "@tool_name", "value": tool_name}],
         )
-        
+
         if tools:
             return tools[0].get("mcp_id")
-        
+
         return None
     
     async def _call_mcp_tool(
@@ -323,23 +328,32 @@ class OrchestratorAgent:
     
     async def _get_orchestrator_prompt(self) -> str:
         """Get orchestrator system prompt from Cosmos DB.
-        
+
         Raises:
             Exception: If prompt cannot be loaded from Cosmos DB
         """
+        # Return cached prompt if available
+        if self._system_prompt_cache is not None:
+            logger.debug("Returning cached system prompt")
+            return self._system_prompt_cache
+
+        logger.info("Loading system prompt from Cosmos (cache miss)", prompt_id=PROMPT_ID)
         items = await self.cosmos_client.query_items(
             container_name=self.settings.cosmos.prompts_container,
             query="SELECT * FROM c WHERE c.id = @prompt_id",
             parameters=[{"name": "@prompt_id", "value": PROMPT_ID}],
         )
-        
+
         if not items:
             raise Exception(f"Prompt '{PROMPT_ID}' not found in Cosmos DB container '{self.settings.cosmos.prompts_container}'")
-        
+
         content = items[0].get("content", "")
         if not content:
             raise Exception(f"Prompt '{PROMPT_ID}' has empty content")
-        
+
+        # Cache the prompt
+        self._system_prompt_cache = content
+        logger.info("System prompt loaded and cached", prompt_id=PROMPT_ID, length=len(content))
         return content
     
     async def close(self):

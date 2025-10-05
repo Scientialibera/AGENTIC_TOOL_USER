@@ -52,6 +52,10 @@ gremlin_client: Optional[GremlinClient] = None
 cosmos_client: Optional[CosmosDBClient] = None
 account_resolver: Optional[AccountResolverService] = None
 
+# Caches for prompts and tool definitions
+_system_prompt_cache: Optional[str] = None
+_agent_tools_cache: Optional[List[Dict[str, Any]]] = None
+
 
 async def initialize_clients():
     """Initialize all required clients."""
@@ -76,46 +80,68 @@ async def initialize_clients():
 
 async def get_system_prompt(rbac_context: Optional[Dict[str, Any]] = None) -> str:
     """Get graph agent system prompt from Cosmos DB.
-    
+
     Raises:
         Exception: If prompt cannot be loaded from Cosmos DB
     """
-    if cosmos_client is None:
-        await initialize_clients()
-    
-    prompt_items = await cosmos_client.query_items(
-        container_name=settings.cosmos.prompts_container,
-        query="SELECT * FROM c WHERE c.id = @prompt_id",
-        parameters=[{"name": "@prompt_id", "value": PROMPT_ID}],
-    )
-    
-    if not prompt_items:
-        raise Exception(f"Prompt '{PROMPT_ID}' not found in Cosmos DB container '{settings.cosmos.prompts_container}'")
-    
-    base_prompt = prompt_items[0].get("content", "")
-    if not base_prompt:
-        raise Exception(f"Prompt '{PROMPT_ID}' has empty content")
-    
+    global _system_prompt_cache
+
+    # Load base prompt from cache or Cosmos
+    if _system_prompt_cache is None:
+        if cosmos_client is None:
+            await initialize_clients()
+
+        logger.info("Loading system prompt from Cosmos (cache miss)", prompt_id=PROMPT_ID)
+        prompt_items = await cosmos_client.query_items(
+            container_name=settings.cosmos.prompts_container,
+            query="SELECT * FROM c WHERE c.id = @prompt_id",
+            parameters=[{"name": "@prompt_id", "value": PROMPT_ID}],
+        )
+
+        if not prompt_items:
+            raise Exception(f"Prompt '{PROMPT_ID}' not found in Cosmos DB container '{settings.cosmos.prompts_container}'")
+
+        base_prompt = prompt_items[0].get("content", "")
+        if not base_prompt:
+            raise Exception(f"Prompt '{PROMPT_ID}' has empty content")
+
+        # Cache the base prompt
+        _system_prompt_cache = base_prompt
+        logger.info("System prompt loaded and cached", prompt_id=PROMPT_ID)
+    else:
+        logger.debug("Using cached system prompt")
+
+    prompt = _system_prompt_cache
+
+    # Add RBAC context if provided (not cached since it's user-specific)
     if rbac_context:
         user_email = rbac_context.get("email", "")
-        base_prompt += f"\n\n## RBAC Context\nUser: {user_email}\nImportant: Filter graph traversals by user access when appropriate."
-    
-    return base_prompt
+        prompt += f"\n\n## RBAC Context\nUser: {user_email}\nImportant: Filter graph traversals by user access when appropriate."
+
+    return prompt
 
 
 async def load_agent_tools() -> List[Dict[str, Any]]:
     """
     Load all tool definitions for this agent type from Cosmos DB.
-    
+
     Returns:
         List of tool definitions in OpenAI function format
-        
+
     Raises:
         Exception: If no tools found for this agent type
     """
+    global _agent_tools_cache
+
+    # Return cached tools if available
+    if _agent_tools_cache is not None:
+        logger.debug("Returning cached agent tools", count=len(_agent_tools_cache))
+        return _agent_tools_cache
+
     if cosmos_client is None:
         await initialize_clients()
-    
+
+    logger.info("Loading agent tools from Cosmos (cache miss)", agent_type=AGENT_TYPE)
     # Load all tool definitions for this agent type from Cosmos DB
     # Pattern: {agent_type}_*_function (e.g., graph_query_function, graph_analysis_function)
     tool_items = await cosmos_client.query_items(
@@ -126,7 +152,7 @@ async def load_agent_tools() -> List[Dict[str, Any]]:
     
     if not tool_items:
         raise Exception(f"No tool definitions found for agent type '{AGENT_TYPE}' in Cosmos DB")
-    
+
     tools = []
     for tool_def in tool_items:
         tools.append({
@@ -137,10 +163,12 @@ async def load_agent_tools() -> List[Dict[str, Any]]:
                 "parameters": tool_def.get("parameters"),
             }
         })
-    
-    logger.info(f"Loaded {len(tools)} tool(s) for agent type '{AGENT_TYPE}'", 
+
+    # Cache the tools
+    _agent_tools_cache = tools
+    logger.info(f"Loaded and cached {len(tools)} tool(s) for agent type '{AGENT_TYPE}'",
                tool_names=[t["function"]["name"] for t in tools])
-    
+
     return tools
 
 

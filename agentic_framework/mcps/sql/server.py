@@ -52,6 +52,11 @@ fabric_client: Optional[FabricClient] = None
 cosmos_client: Optional[CosmosDBClient] = None
 account_resolver: Optional[AccountResolverService] = None
 
+# Caches for prompts, schema, and tool definitions
+_sql_schema_cache: Optional[str] = None
+_system_prompt_cache: Optional[str] = None
+_agent_tools_cache: Optional[List[Dict[str, Any]]] = None
+
 
 async def initialize_clients():
     """Initialize all required clients."""
@@ -74,25 +79,38 @@ async def initialize_clients():
 
 async def get_sql_schema() -> str:
     """Load SQL schema from Cosmos DB."""
+    global _sql_schema_cache
+
+    # Return cached schema if available
+    if _sql_schema_cache is not None:
+        logger.debug("Returning cached SQL schema")
+        return _sql_schema_cache
+
     try:
         if cosmos_client is None:
             await initialize_clients()
 
+        logger.info("Loading SQL schema from Cosmos (cache miss)")
         items = await cosmos_client.query_items(
             container_name=SQL_SCHEMA_CONTAINER,
             query="SELECT * FROM c",
         )
-        
+
         if not items:
             return "No schema available"
-        
+
         schema_parts = []
         for item in items:
             table_name = item.get("table_name", "unknown")
             columns = item.get("columns", [])
             schema_parts.append(f"Table: {table_name}\nColumns: {', '.join(columns)}")
-        
-        return "\n\n".join(schema_parts)
+
+        schema = "\n\n".join(schema_parts)
+
+        # Cache the schema
+        _sql_schema_cache = schema
+        logger.info("SQL schema loaded and cached", table_count=len(items))
+        return schema
     except Exception as e:
         logger.error("Failed to load SQL schema", error=str(e))
         return "Schema unavailable"
@@ -100,49 +118,70 @@ async def get_sql_schema() -> str:
 
 async def get_system_prompt(rbac_context: Optional[Dict[str, Any]] = None) -> str:
     """Get SQL agent system prompt with schema from Cosmos DB.
-    
+
     Raises:
         Exception: If prompt cannot be loaded from Cosmos DB
     """
-    if cosmos_client is None:
-        await initialize_clients()
-    
-    prompt_items = await cosmos_client.query_items(
-        container_name=settings.cosmos.prompts_container,
-        query="SELECT * FROM c WHERE c.id = @prompt_id",
-        parameters=[{"name": "@prompt_id", "value": PROMPT_ID}],
-    )
-    
-    if not prompt_items:
-        raise Exception(f"Prompt '{PROMPT_ID}' not found in Cosmos DB container '{settings.cosmos.prompts_container}'")
-    
-    base_prompt = prompt_items[0].get("content", "")
-    if not base_prompt:
-        raise Exception(f"Prompt '{PROMPT_ID}' has empty content")
-    
+    global _system_prompt_cache
+
+    # Load base prompt from cache or Cosmos
+    if _system_prompt_cache is None:
+        if cosmos_client is None:
+            await initialize_clients()
+
+        logger.info("Loading system prompt from Cosmos (cache miss)", prompt_id=PROMPT_ID)
+        prompt_items = await cosmos_client.query_items(
+            container_name=settings.cosmos.prompts_container,
+            query="SELECT * FROM c WHERE c.id = @prompt_id",
+            parameters=[{"name": "@prompt_id", "value": PROMPT_ID}],
+        )
+
+        if not prompt_items:
+            raise Exception(f"Prompt '{PROMPT_ID}' not found in Cosmos DB container '{settings.cosmos.prompts_container}'")
+
+        base_prompt = prompt_items[0].get("content", "")
+        if not base_prompt:
+            raise Exception(f"Prompt '{PROMPT_ID}' has empty content")
+
+        # Cache the base prompt
+        _system_prompt_cache = base_prompt
+        logger.info("System prompt loaded and cached", prompt_id=PROMPT_ID)
+    else:
+        logger.debug("Using cached system prompt")
+
+    # Get schema (also cached)
     schema = await get_sql_schema()
-    prompt = f"{base_prompt}\n\n## Database Schema\n{schema}"
-    
+    prompt = f"{_system_prompt_cache}\n\n## Database Schema\n{schema}"
+
+    # Add RBAC context if provided (not cached since it's user-specific)
     if rbac_context:
         user_email = rbac_context.get("email", "")
         prompt += f"\n\n## RBAC Context\nUser: {user_email}\nImportant: Add WHERE clause to filter by user access (e.g., WHERE owner_email = '{user_email}' or assigned_to = '{user_email}')"
-    
+
     return prompt
 
 
 async def load_agent_tools() -> List[Dict[str, Any]]:
     """
     Load all tool definitions for this agent type from Cosmos DB.
-    
+
     Returns:
         List of tool definitions in OpenAI function format
-        
+
     Raises:
         Exception: If no tools found for this agent type
     """
+    global _agent_tools_cache
+
+    # Return cached tools if available
+    if _agent_tools_cache is not None:
+        logger.debug("Returning cached agent tools", count=len(_agent_tools_cache))
+        return _agent_tools_cache
+
     if cosmos_client is None:
         await initialize_clients()
-    
+
+    logger.info("Loading agent tools from Cosmos (cache miss)", agent_type=AGENT_TYPE)
     # Load all tool definitions for this agent type from Cosmos DB
     # Pattern: {agent_type}_*_function (e.g., sql_query_function, sql_analysis_function)
     tool_items = await cosmos_client.query_items(
@@ -150,10 +189,10 @@ async def load_agent_tools() -> List[Dict[str, Any]]:
         query=f"SELECT * FROM c WHERE STARTSWITH(c.id, @prefix) AND ENDSWITH(c.id, '_function')",
         parameters=[{"name": "@prefix", "value": f"{AGENT_TYPE}_"}],
     )
-    
+
     if not tool_items:
         raise Exception(f"No tool definitions found for agent type '{AGENT_TYPE}' in Cosmos DB")
-    
+
     tools = []
     for tool_def in tool_items:
         tools.append({
@@ -164,10 +203,12 @@ async def load_agent_tools() -> List[Dict[str, Any]]:
                 "parameters": tool_def.get("parameters"),
             }
         })
-    
-    logger.info(f"Loaded {len(tools)} tool(s) for agent type '{AGENT_TYPE}'", 
+
+    # Cache the tools
+    _agent_tools_cache = tools
+    logger.info(f"Loaded and cached {len(tools)} tool(s) for agent type '{AGENT_TYPE}'",
                tool_names=[t["function"]["name"] for t in tools])
-    
+
     return tools
 
 

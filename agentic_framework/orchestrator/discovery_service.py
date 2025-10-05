@@ -23,7 +23,7 @@ logger = structlog.get_logger(__name__)
 
 class MCPDiscoveryService:
     """Service for discovering and managing MCP servers."""
-    
+
     def __init__(self, cosmos_client: CosmosDBClient, settings=None):
         """Initialize the discovery service."""
         self.cosmos_client = cosmos_client
@@ -32,6 +32,12 @@ class MCPDiscoveryService:
 
         # Get MCP endpoints from settings (configured via MCP_ENDPOINTS env var)
         self.mcp_endpoints = self.settings.mcp_endpoints_dict
+
+        # Cache for MCPs, tools, and RBAC configs
+        self._mcps_cache: Optional[List[Dict[str, Any]]] = None
+        self._tools_cache: Optional[List[Dict[str, Any]]] = None
+        self._rbac_configs_cache: Dict[str, List[RBACConfig]] = {}
+        self._tool_to_mcp_map: Dict[str, str] = {}
 
         logger.info("MCP Discovery Service initialized", mcp_count=len(self.mcp_endpoints))
     
@@ -49,11 +55,16 @@ class MCPDiscoveryService:
             List of MCP information with their tools
         """
         try:
+            # Return cached MCPs if available
+            if self._mcps_cache is not None:
+                logger.debug("Returning cached MCPs", count=len(self._mcps_cache))
+                return self._mcps_cache
+
             if not self.mcp_endpoints:
                 logger.warning("No MCP endpoints configured in MCP_ENDPOINTS")
                 return []
 
-            logger.info("Discovering MCPs from endpoints", mcp_count=len(self.mcp_endpoints))
+            logger.info("Discovering MCPs from endpoints (cache miss)", mcp_count=len(self.mcp_endpoints))
 
             all_mcps = []
             for mcp_name, endpoint in self.mcp_endpoints.items():
@@ -61,9 +72,11 @@ class MCPDiscoveryService:
                 if mcp_info:
                     all_mcps.append(mcp_info)
 
-            logger.info("MCPs discovered", count=len(all_mcps), mcps=[m['name'] for m in all_mcps])
+            # Cache the results
+            self._mcps_cache = all_mcps
+            logger.info("MCPs discovered and cached", count=len(all_mcps), mcps=[m['name'] for m in all_mcps])
             return all_mcps
-            
+
         except Exception as e:
             logger.error("Failed to discover MCPs", error=str(e))
             return []
@@ -183,17 +196,31 @@ class MCPDiscoveryService:
         try:
             if not roles:
                 return []
-            
+
+            # Create cache key from sorted roles
+            cache_key = ",".join(sorted(roles))
+
+            # Return cached configs if available
+            if cache_key in self._rbac_configs_cache:
+                logger.debug("Returning cached RBAC configs", roles=roles)
+                return self._rbac_configs_cache[cache_key]
+
+            logger.debug("Loading RBAC configs from Cosmos (cache miss)", roles=roles)
             placeholders = ", ".join([f"'{role}'" for role in roles])
             query = f"SELECT * FROM c WHERE c.role_name IN ({placeholders})"
-            
+
             items = await self.cosmos_client.query_items(
                 container_name=self.settings.cosmos.rbac_config_container,
                 query=query,
             )
-            
-            return [RBACConfig(**item) for item in items]
-            
+
+            configs = [RBACConfig(**item) for item in items]
+
+            # Cache the results
+            self._rbac_configs_cache[cache_key] = configs
+            logger.debug("RBAC configs loaded and cached", roles=roles, count=len(configs))
+            return configs
+
         except Exception as e:
             logger.error("Failed to load RBAC configs", error=str(e))
             return []
@@ -206,12 +233,18 @@ class MCPDiscoveryService:
             List of tool definitions with their MCP source
         """
         try:
+            # Return cached tools if available
+            if self._tools_cache is not None:
+                logger.debug("Returning cached tools", count=len(self._tools_cache))
+                return self._tools_cache
+
             from fastmcp import Client
 
             if not self.mcp_endpoints:
                 logger.warning("No MCP endpoints configured")
                 return []
 
+            logger.info("Loading tools from MCPs (cache miss)", mcp_count=len(self.mcp_endpoints))
             all_tools = []
 
             for mcp_name, endpoint in self.mcp_endpoints.items():
@@ -231,13 +264,18 @@ class MCPDiscoveryService:
                             }
                             all_tools.append(tool_def)
 
+                            # Build tool-to-MCP mapping
+                            self._tool_to_mcp_map[tool.name] = mcp_name
+
                         logger.info("Loaded tools for MCP", mcp_name=mcp_name, tool_count=len(mcp_tools))
 
                 except Exception as e:
                     logger.error("Failed to get tools from MCP", mcp_name=mcp_name, error=str(e))
                     continue
 
-            logger.info("All tools loaded", total_count=len(all_tools))
+            # Cache the results
+            self._tools_cache = all_tools
+            logger.info("All tools loaded and cached", total_count=len(all_tools))
             return all_tools
 
         except Exception as e:
@@ -326,6 +364,18 @@ class MCPDiscoveryService:
         
         return False
     
+    def get_tool_mcp_mapping(self, tool_name: str) -> Optional[str]:
+        """
+        Get the MCP ID for a given tool name from cache.
+
+        Args:
+            tool_name: Name of the tool
+
+        Returns:
+            MCP ID or None if not found
+        """
+        return self._tool_to_mcp_map.get(tool_name)
+
     async def close(self):
         """Close HTTP client."""
         await self.http_client.aclose()

@@ -91,7 +91,7 @@ app_state = AppState()
 async def lifespan(app: FastAPI):
     """Lifecycle manager for the application."""
     logger.info("Starting Orchestrator Agent API")
-    
+
     app_state.aoai_client = AzureOpenAIClient(settings.aoai)
     app_state.cosmos_client = CosmosDBClient(settings.cosmos)
     app_state.unified_service = UnifiedDataService(app_state.cosmos_client, settings.cosmos)
@@ -103,13 +103,45 @@ async def lifespan(app: FastAPI):
         app_state.unified_service,
         settings
     )
-    
+
     logger.info("All services initialized")
-    
+
+    # Warm up caches and connections on startup
+    logger.info("Warming up caches and connections...")
+    try:
+        # Get RBAC context for cache warming (use admin in dev mode)
+        rbac_context = RBACContext(
+            user_id="system@warmup",
+            email="system@warmup",
+            tenant_id="warmup",
+            object_id="warmup",
+            roles=["admin"],
+            access_scope=AccessScope(all_accounts=True),
+        )
+
+        # Pre-load MCPs
+        await app_state.discovery_service.discover_mcps(rbac_context)
+
+        # Pre-load tools
+        await app_state.discovery_service.get_all_available_tools()
+
+        # Pre-load system prompt
+        await app_state.orchestrator._get_orchestrator_prompt()
+
+        # Initialize AOAI client connection (creates token and client)
+        await app_state.aoai_client._get_client()
+
+        # Initialize Cosmos DB connection
+        await app_state.cosmos_client._get_database()
+
+        logger.info("Cache warmup and connection initialization complete")
+    except Exception as e:
+        logger.warning("Cache warmup failed (non-critical)", error=str(e))
+
     yield
-    
+
     logger.info("Shutting down Orchestrator Agent API")
-    
+
     if app_state.orchestrator:
         await app_state.orchestrator.close()
     if app_state.discovery_service:

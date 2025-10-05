@@ -127,7 +127,6 @@ Emit each tool call as a single object:
   "tool_name": "sql_agent",
   "arguments": {
     "query": "Task: Get contacts for the discovered accounts. Emphasize Sales/GTMS roles if available; otherwise return all contacts. Sort by account name, then last name, first name. Limit 100.",
-    "bindings": { "accounts_filter": ["<from discovered_accounts>"], "department": "Sales" },
     "accounts_mentioned": ["Microsoft Corporation"]
   }
 }
