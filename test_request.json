@@ -1,9 +1,0 @@
-{
-  "messages": [
-    {
-      "role": "user",
-      "content": "List available tools"
-    }
-  ],
-  "user_id": "test@example.com"
-}

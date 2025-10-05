@@ -774,8 +774,8 @@ body {
 .message-content h3,
 .message-content h4 {
   color: #667eea;
-  margin-top: 24px;
-  margin-bottom: 12px;
+  margin-top: 16px;
+  margin-bottom: 8px;
   font-weight: 600;
 }
 
@@ -807,31 +807,31 @@ body {
 }
 
 .message-content p {
-  margin-bottom: 16px;
-  line-height: 1.7;
+  margin-bottom: 10px;
+  line-height: 1.6;
 }
 
 .message-content ul,
 .message-content ol {
-  margin-left: 24px;
-  margin-bottom: 16px;
-  padding-left: 8px;
-}
-
-.message-content li {
-  margin-bottom: 10px;
-  line-height: 1.7;
+  margin-left: 20px;
+  margin-bottom: 12px;
   padding-left: 4px;
 }
 
+.message-content li {
+  margin-bottom: 6px;
+  line-height: 1.6;
+  padding-left: 2px;
+}
+
 .message-content ol > li {
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .message-content ul ul,
 .message-content ol ul {
-  margin-top: 8px;
-  margin-bottom: 8px;
+  margin-top: 4px;
+  margin-bottom: 4px;
 }
 
 .message-content strong {
