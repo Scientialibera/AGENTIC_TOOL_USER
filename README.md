@@ -1,7 +1,3 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Overview
 
 This is an **agentic framework** built on **FastMCP** for orchestrating multi-agent workflows with Azure services. The system consists of:
