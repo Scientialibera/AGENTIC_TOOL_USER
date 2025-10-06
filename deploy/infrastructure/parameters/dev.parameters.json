@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "baseName": {
+      "value": "agenticdev"
+    },
+    "environment": {
+      "value": "dev"
+    },
+    "openAiChatModel": {
+      "value": "gpt-4"
+    },
+    "openAiModelVersion": {
+      "value": "2024-08-06"
+    },
+    "openAiEmbeddingModel": {
+      "value": "text-embedding-3-small"
+    },
+    "cosmosDbThroughput": {
+      "value": 400
+    },
+    "gremlinDbThroughput": {
+      "value": 400
+    },
+    "containerAppsPlan": {
+      "value": "Consumption"
+    },
+    "enableContainerRegistry": {
+      "value": true
+    }
+  }
+}

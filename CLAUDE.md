@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is an **agentic framework** built on **FastMCP** for orchestrating multi-agent workflows with Azure services. The system consists of:
 
 - **Orchestrator Agent**: Central coordinator that discovers MCPs from configured endpoints, routes requests, and aggregates responses using Azure OpenAI
-- **MCP Servers**: Specialized Model Context Protocol servers (SQL, Graph) that execute domain-specific queries
+- **MCP Servers**: Specialized Model Context Protocol servers (SQL, Graph, Interpreter) that execute domain-specific queries
 - **RBAC System**: Role-based access control with row-level security via Cosmos DB configuration
 - **Account Resolution**: Fuzzy matching service for handling typos and abbreviations in account names
 
@@ -18,11 +18,12 @@ The framework supports both production and dev mode operation.
 ```
 User Request → Orchestrator (Port 8000)
                      ↓
-         ┌───────────┴───────────┐
-         ↓                       ↓
-    SQL MCP (8001)         Graph MCP (8002)
-         ↓                       ↓
-    Fabric SQL              Gremlin/Cosmos
+         ┌───────────┴───────────────────┐
+         ↓                   ↓            ↓
+    Graph MCP (8001)   Interpreter   SQL MCP (8003)
+         ↓              MCP (8002)        ↓
+    Gremlin/Cosmos         ↓         Fabric SQL
+                     Code Execution
 ```
 
 ### Key Components
@@ -33,8 +34,10 @@ User Request → Orchestrator (Port 8000)
    - Multi-round planning loop using Azure OpenAI function calling
    - Routes tool calls to appropriate MCP servers using FastMCP client
 
-2. **MCP Servers** ([mcps/sql/server.py](agentic_framework/mcps/sql/server.py), [mcps/graph/server.py](agentic_framework/mcps/graph/server.py))
-   - Use internal LLMs to convert natural language → SQL/Gremlin
+2. **MCP Servers** ([mcps/sql/server.py](agentic_framework/mcps/sql/server.py), [mcps/graph/server.py](agentic_framework/mcps/graph/server.py), [mcps/interpreter/server.py](agentic_framework/mcps/interpreter/server.py))
+   - **SQL MCP**: Uses internal LLM to convert natural language → SQL queries on Fabric lakehouse
+   - **Graph MCP**: Uses internal LLM to convert natural language → Gremlin queries for relationship discovery
+   - **Interpreter MCP**: Uses Azure OpenAI Assistants API for code execution (math, graphs, data analysis)
    - Apply RBAC filtering via WHERE clause injection (SQL) or vertex filtering (Graph)
    - Support JWT authentication in production mode (bypassed in dev mode)
    - Return structured results to orchestrator
@@ -56,7 +59,7 @@ The framework uses `.env` in the **repository root** for configuration. Key sett
 - `DEV_MODE=true` - Bypasses RBAC and authentication, returns dummy data (no Azure connections needed)
 - `BYPASS_TOKEN=true` - Bypasses JWT token validation for API endpoints (for testing)
 - `DEBUG=true` - Enables verbose logging
-- `MCP_ENDPOINTS={"sql_mcp": "http://localhost:8001/mcp", "graph_mcp": "http://localhost:8002/mcp"}` - JSON dictionary mapping MCP IDs to endpoints
+- `MCP_ENDPOINTS={"graph_mcp": "http://localhost:8001/mcp", "interpreter_mcp": "http://localhost:8002/mcp", "sql_mcp": "http://localhost:8003/mcp"}` - JSON dictionary mapping MCP IDs to endpoints
 
 ### Azure Services (Production)
 - **Azure OpenAI**: `AOAI_ENDPOINT`, `AOAI_CHAT_DEPLOYMENT`, `AOAI_EMBEDDING_DEPLOYMENT`
@@ -73,6 +76,14 @@ All Azure services use **DefaultAzureCredential** from `azure.identity`. For loc
 ## Running the Framework
 
 ### Development Mode (No Azure Resources)
+
+**Option 1: Using the helper script (PowerShell)**
+```powershell
+# Starts all MCPs and orchestrator in separate windows
+.\agentic_framework\deploy\start-local.ps1
+```
+
+**Option 2: Manual startup (separate terminals)**
 ```bash
 # Set dev mode in .env
 echo "DEV_MODE=true" >> .env
@@ -80,11 +91,12 @@ echo "BYPASS_TOKEN=true" >> .env
 
 # Start MCP servers (in separate terminals, from repository root)
 cd agentic_framework
-python -m mcps.sql.server    # Terminal 1, port 8001
-python -m mcps.graph.server  # Terminal 2, port 8002
+python -m mcps.graph.server       # Terminal 1, port 8001
+python -m mcps.interpreter.server # Terminal 2, port 8002
+python -m mcps.sql.server         # Terminal 3, port 8003
 
 # Start orchestrator
-python -m orchestrator.app   # Terminal 3, port 8000
+python -m orchestrator.app        # Terminal 4, port 8000
 # OR
 uvicorn orchestrator.app:app --reload --port 8000
 ```
@@ -195,35 +207,327 @@ curl http://localhost:8000/tools
 cd agentic_framework
 python tests/test_sql_mcp.py
 python tests/test_graph_mcp.py
+python tests/test_interpreter_mcp.py
 python tests/test_orchestrator.py
+python tests/test_orchestrator_multitool.py
 ```
 
 ## Adding New MCPs
 
-1. **Create MCP Server** using FastMCP pattern in `agentic_framework/mcps/`:
-   ```python
-   from fastmcp import FastMCP
-   from shared.auth_provider import create_auth_provider
+Adding a new MCP requires code changes, configuration updates, and optionally infrastructure changes for additional Azure services.
 
-   auth_provider = create_auth_provider()
-   mcp = FastMCP("Custom MCP", auth=auth_provider)
+### Step 1: Create MCP Server Code
 
-   @mcp.tool()
-   async def custom_tool(query: str, rbac_context: Optional[Dict] = None):
-       return {"success": True, "data": []}
+**1.1. Create MCP Directory and Server**
 
-   if __name__ == "__main__":
-       mcp.run(transport="http", port=8003)
-   ```
+Using the template in [mcps/TEMPLATE_MCP.py](agentic_framework/mcps/TEMPLATE_MCP.py):
 
-2. **Upload Tool Definitions**: Upload tool schemas to `agent_functions` container in Cosmos DB
+```bash
+# Create new MCP directory (name determines port assignment - alphabetical order)
+mkdir agentic_framework/mcps/custom
+cp agentic_framework/mcps/TEMPLATE_MCP.py agentic_framework/mcps/custom/server.py
+```
 
-3. **Update Environment**: Add MCP endpoint to `MCP_ENDPOINTS` JSON in `.env`:
-   ```bash
-   MCP_ENDPOINTS={"sql_mcp": "http://localhost:8001/mcp", "graph_mcp": "http://localhost:8002/mcp", "custom_mcp": "http://localhost:8003/mcp"}
-   ```
+**1.2. Implement MCP Logic**
 
-4. **Restart Orchestrator**: Auto-discovers new MCP from configured endpoint
+Edit `agentic_framework/mcps/custom/server.py`:
+
+```python
+from fastmcp import FastMCP
+from shared.auth_provider import create_auth_provider
+from shared.config import get_settings
+from shared.aoai_client import AzureOpenAIClient
+import os
+
+# Configuration
+MCP_SERVER_NAME = "Custom MCP Server"
+AGENT_TYPE = "custom"
+PROMPT_ID = "custom_agent_system"
+MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8004"))  # Adjust default based on alphabetical position
+
+settings = get_settings()
+auth_provider = create_auth_provider()
+mcp = FastMCP(MCP_SERVER_NAME, auth=auth_provider)
+
+# Global clients
+aoai_client = None
+
+async def initialize_clients():
+    global aoai_client
+    if aoai_client is None:
+        aoai_client = AzureOpenAIClient(settings.aoai)
+
+@mcp.tool()
+async def custom_tool(query: str, rbac_context: Optional[Dict] = None) -> Dict[str, Any]:
+    """
+    Execute custom operations.
+
+    Args:
+        query: Natural language query
+        rbac_context: RBAC context for filtering (injected by orchestrator)
+    """
+    await initialize_clients()
+
+    # Your custom logic here
+    # Use aoai_client, apply RBAC filtering, etc.
+
+    return {
+        "success": True,
+        "data": [],
+        "source": "custom_mcp"
+    }
+
+if __name__ == "__main__":
+    mcp.run(transport="http", host="0.0.0.0", port=MCP_SERVER_PORT)
+```
+
+**1.3. Create Dockerfile**
+
+Create `agentic_framework/mcps/custom/Dockerfile`:
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy shared dependencies and MCP code
+COPY shared/ ./shared/
+COPY mcps/custom/ ./mcps/custom/
+COPY requirements.txt .
+
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Run the MCP server
+CMD ["python", "-m", "mcps.custom.server"]
+```
+
+### Step 2: Create Tool Definitions
+
+**2.1. Create Tool Schema**
+
+Create `scripts/assets/functions/tools/custom_tool.json`:
+
+```json
+{
+  "id": "custom_tool",
+  "mcp_id": "custom_mcp",
+  "name": "custom_tool",
+  "description": "Execute custom operations based on natural language query",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Natural language description of the operation to perform"
+      }
+    },
+    "required": ["query"]
+  },
+  "allowed_roles": ["admin", "power_user"]
+}
+```
+
+**2.2. Create System Prompt (Optional)**
+
+Create `scripts/assets/prompts/custom_agent_system.md`:
+
+```markdown
+You are a custom operations agent that executes specialized tasks.
+
+Your capabilities:
+- Custom operation 1
+- Custom operation 2
+
+Always return structured data in the expected format.
+```
+
+### Step 3: Configure Infrastructure (If New Azure Services Needed)
+
+**3.1. Add Bicep Module (if needed)**
+
+If your MCP needs a new Azure service (e.g., Azure Storage, Key Vault):
+
+Create `deploy/infrastructure/modules/storage.bicep`:
+
+```bicep
+param name string
+param location string
+param tags object = {}
+
+resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
+  name: name
+  location: location
+  kind: 'StorageV2'
+  sku: {
+    name: 'Standard_LRS'
+  }
+  properties: {
+    accessTier: 'Hot'
+  }
+  tags: tags
+}
+
+output storageAccountId string = storageAccount.id
+output storageAccountName string = storageAccount.name
+```
+
+**3.2. Update Main Bicep Template**
+
+Edit `deploy/infrastructure/main.bicep`:
+
+```bicep
+// Add to variables section
+var storageAccountName = '${baseName}storage${uniqueSuffix}'
+
+// Add module import
+module storage 'modules/storage.bicep' = {
+  name: 'deploy-storage'
+  params: {
+    name: storageAccountName
+    location: location
+    tags: tags
+  }
+}
+
+// Add RBAC assignment
+resource storageRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.outputs.storageAccountId, identity.outputs.principalId, 'StorageBlobDataContributor')
+  scope: resourceGroup()
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+    principalId: identity.outputs.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Add to outputs section
+output storageAccountName string = storage.outputs.storageAccountName
+```
+
+**3.3. Update generate-env.ps1**
+
+Edit `deploy/utils/generate-env.ps1` to discover the new service:
+
+```powershell
+# Add after other resource discovery
+$storage = az storage account list -g $ResourceGroup --query "[0]" -o json | ConvertFrom-Json
+if ($storage) {
+    $storageName = $storage.name
+    Write-Host "  ✓ Azure Storage: $storageName" -ForegroundColor Green
+}
+
+# Add to .env generation
+STORAGE_ACCOUNT_NAME=$storageName
+```
+
+### Step 4: Local Development Setup
+
+**4.1. Update Local .env**
+
+Add MCP endpoint to `MCP_ENDPOINTS`:
+
+```bash
+MCP_ENDPOINTS={"graph_mcp": "http://localhost:8001/mcp", "interpreter_mcp": "http://localhost:8002/mcp", "sql_mcp": "http://localhost:8003/mcp", "custom_mcp": "http://localhost:8004/mcp"}
+```
+
+Add any new service configuration:
+
+```bash
+STORAGE_ACCOUNT_NAME=your-storage-account
+```
+
+**4.2. Upload Tool Definitions**
+
+```bash
+python deploy/data/init-cosmos-data.py
+```
+
+**4.3. Test Locally**
+
+```bash
+# Terminal 1-3: Existing MCPs
+python -m mcps.graph.server       # Port 8001
+python -m mcps.interpreter.server # Port 8002
+python -m mcps.sql.server         # Port 8003
+
+# Terminal 4: New MCP
+python -m mcps.custom.server      # Port 8004
+
+# Terminal 5: Orchestrator
+python -m orchestrator.app        # Port 8000
+```
+
+### Step 5: Deploy to Azure
+
+**5.1. Infrastructure Update (if needed)**
+
+```powershell
+# Redeploy infrastructure with new resources
+az deployment group create `
+    --resource-group "mybot-rg" `
+    --template-file "deploy/infrastructure/main.bicep" `
+    --parameters "deploy/infrastructure/parameters/prod.parameters.json"
+```
+
+**5.2. Deploy Container Apps**
+
+The deployment script automatically discovers all MCPs in `mcps/` directory:
+
+```powershell
+# Deploy all apps (including new MCP)
+.\deploy\apps\deploy-container-apps.ps1 -ResourceGroup "mybot-rg"
+```
+
+The script will:
+1. Discover `custom` MCP folder
+2. Assign port 8004 (based on alphabetical order: graph=8001, interpreter=8002, sql=8003, custom=8004)
+3. Build Docker image
+4. Push to ACR
+5. Deploy Container App with correct port
+6. Update orchestrator with new MCP endpoint
+
+**5.3. Verify Deployment**
+
+```bash
+# Check MCP is running
+az containerapp list -g mybot-rg --query "[].{Name:name, Status:properties.runningStatus}" -o table
+
+# Get orchestrator URL
+$orchUrl = az containerapp show -n orchestrator -g mybot-rg --query "properties.configuration.ingress.fqdn" -o tsv
+
+# Verify MCP is discovered
+curl "https://$orchUrl/mcps"
+
+# Test new tool
+curl -X POST "https://$orchUrl/chat" `
+    -H "Content-Type: application/json" `
+    -d '{
+        "messages": [{"role": "user", "content": "Use custom tool to..."}],
+        "user_id": "test@example.com"
+    }'
+```
+
+### Important Notes
+
+**Port Assignment**:
+- Ports are assigned alphabetically by MCP folder name
+- Example: `aardvark_mcp` gets port 8001, `zebra_mcp` gets last port
+- New MCPs inserted alphabetically will shift port numbers
+- **Recommendation**: Use prefixes to control order (e.g., `01_graph`, `02_sql`, `03_custom`)
+
+**Deployment Script Auto-Discovery**:
+- `deploy/apps/deploy-container-apps.ps1` automatically discovers MCPs in `agentic_framework/mcps/`
+- No hardcoded MCP lists to maintain
+- New MCPs are automatically included in builds
+
+**RBAC for New MCPs**:
+- If your MCP needs access to new Azure services, add RBAC assignments to `deploy/infrastructure/main.bicep`
+- Or manually run: `az role assignment create --assignee <managed-identity-id> --role <role> --scope <resource-id>`
+
+**Tool Visibility**:
+- Tools are filtered by `allowed_roles` in tool definition
+- Update `rbac_config` container in Cosmos DB to control which roles can access your MCP
 
 ## RBAC Implementation
 
@@ -301,57 +605,100 @@ The framework supports three authentication modes controlled by environment vari
 
 ## Deployment
 
-### Deployment Script
+The framework uses an enterprise-grade deployment structure in the `deploy/` directory with modular Bicep templates, automated RBAC configuration, and orchestrated deployment scripts.
 
-The main deployment script is `agentic_framework/deploy/deploy-aca.ps1`. Run it from the repository root:
+### Quick Start - New Client Deployment
+
+For complete zero-to-production deployment:
 
 ```powershell
-# Deploy without rebuilding images (faster)
-.\agentic_framework\deploy\deploy-aca.ps1 -EnvFile .env
-
-# Deploy with image rebuild (after code changes)
-.\agentic_framework\deploy\deploy-aca.ps1 -EnvFile .env -BuildImages
+# Complete automated deployment
+.\deploy\main.ps1 -BaseName "clientbot" -Location "eastus" -Environment "prod"
 ```
 
-### Deployment Process
+This orchestrates:
+1. **Infrastructure** - Deploys all Azure resources using Bicep
+2. **Security** - Configures managed identity with all required RBAC permissions
+3. **Configuration** - Auto-generates `.env` from deployed resources
+4. **Data** - Initializes Cosmos DB with prompts, functions, and demo data
+5. **Applications** - Builds and deploys all Container Apps
 
-1. **Build Docker Images** (if `-BuildImages` flag is used):
-   - Builds orchestrator, all MCPs, and frontend
-   - Pushes images to Azure Container Registry
+### Modular Deployment
 
-2. **Configure Infrastructure**:
-   - Creates/updates Container Apps Environment
-   - Sets up Managed Identity with RBAC roles
+Deploy or update individual components:
 
-3. **Deploy MCPs**:
-   - Deploys each MCP with correct port assignment
-   - Sets all required environment variables
-   - Configures internal ingress
+```powershell
+# Infrastructure only (Bicep)
+az deployment group create `
+    --resource-group "mybot-rg" `
+    --template-file ".\deploy\infrastructure\main.bicep" `
+    --parameters ".\deploy\infrastructure\parameters\prod.parameters.json"
 
-4. **Deploy Orchestrator**:
-   - Builds `MCP_ENDPOINTS` JSON from discovered MCPs
-   - Configures external ingress on port 8000
+# Security/RBAC only
+.\deploy\security\configure-rbac.ps1 -ResourceGroup "mybot-rg"
 
-### Deployment Troubleshooting
+# Generate .env from existing resources
+.\deploy\utils\generate-env.ps1 -ResourceGroup "mybot-rg"
 
-**MCP Starting on Wrong Port:**
-- Check that `MCP_PORT` environment variable is set in Container App
-- Verify MCP server code passes `port` parameter to `mcp.run()`:
-  ```python
-  mcp.run(transport=TRANSPORT, host=HOST, port=MCP_SERVER_PORT)
-  ```
-- Check logs: `az containerapp logs show --name <mcp-name> --resource-group <rg> --tail 10`
+# Initialize Cosmos DB data
+python .\deploy\data\init-cosmos-data.py
 
-**Orchestrator Can't Discover MCPs:**
-- Verify `MCP_ENDPOINTS` JSON format (no backticks, proper quotes)
-- Check MCP internal URLs match the format: `https://<mcp-name>.internal.<env-domain>/mcp`
-- Ensure all MCPs are running: `az containerapp list --resource-group <rg> --query "[].{Name:name, Status:properties.runningStatus}"`
+# Deploy Container Apps
+.\deploy\apps\deploy-container-apps.ps1 -ResourceGroup "mybot-rg"
+```
 
-**Image Not Updating:**
-- Azure Container Apps caches images by tag
-- Force update with digest: `az containerapp update --image <registry>/<image>@sha256:<digest>`
-- Or use versioned tags (v1, v2, etc.) instead of `latest`
+### Deployment Structure
 
-### Other Deployment Scripts
-- `configure-env.ps1` - Configure environment variables for deployment
-- `update-mcp-urls.ps1` - Update MCP endpoints after deployment
+```
+deploy/
+├── main.ps1                      # Master orchestrator
+├── infrastructure/               # Bicep IaC
+│   ├── main.bicep                # Main template
+│   ├── modules/                  # Modular components
+│   └── parameters/               # Environment configs
+├── security/                     # RBAC automation
+├── data/                         # Data initialization
+├── apps/                         # Container Apps deployment
+└── utils/                        # Helper scripts
+```
+
+See [deploy/README.md](deploy/README.md) for complete deployment documentation.
+
+### Legacy Deployment Scripts
+
+Previous deployment scripts in `agentic_framework/deploy/` and `scripts/` are deprecated in favor of the new `deploy/` structure. For compatibility:
+- Old: `.\agentic_framework\deploy\deploy-aca.ps1`
+- New: `.\deploy\main.ps1` (recommended)
+
+## Useful Development Commands
+
+### Local Development Workflow
+```powershell
+# 1. Configure environment (one time)
+.\scripts\test_env\set_env.ps1 -ResourceGroup <your-rg>
+
+# 2. Initialize data (one time or when updating prompts/functions)
+python .\scripts\test_env\init_data.py
+
+# 3. Start all services locally (each development session)
+.\agentic_framework\deploy\start-local.ps1
+
+# 4. Test the orchestrator
+curl -X POST http://localhost:8000/chat -H "Content-Type: application/json" -d '{...}'
+```
+
+### Working with Individual MCPs
+```bash
+# Test a single MCP in isolation
+cd agentic_framework
+python -m mcps.sql.server  # Start SQL MCP only
+
+# Run MCP-specific tests
+python tests/test_sql_mcp.py
+```
+
+### Updating Prompts and Functions
+```bash
+# After modifying files in scripts/assets/prompts/ or scripts/assets/functions/
+python .\scripts\test_env\init_data.py  # Re-upload to Cosmos DB
+```
