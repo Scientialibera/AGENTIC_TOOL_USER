@@ -654,96 +654,83 @@ class DataInitializer:
                 await self.gremlin_client.execute_query("g.E().drop()")
                 await self.gremlin_client.execute_query("g.V().drop()")
 
-            # 3) Accounts (normalized numerics)
+            # 3) Accounts (realistic Salesforce data - no revenue/employees, use category instead)
             accounts = [
-                {
-                    "id": "acc_salesforce",
-                    "name": "Salesforce Inc",
-                    "type": "CRM",
-                    "tier": "Enterprise",
-                    "industry": "Technology",
-                    "revenue": 34100000000.0,   # 34.1B -> numeric
-                    "employees": 79000,
-                    "status": "Active Customer",
-                    "contract_value": 2500000.0, # 2.5M -> numeric
-                    "renewal_date": "2025-03-15"
-                },
                 {
                     "id": "acc_microsoft",
                     "name": "Microsoft Corporation",
-                    "type": "Enterprise Software",
+                    "category": "Enterprise",
                     "tier": "Strategic",
                     "industry": "Technology",
-                    "revenue": 245100000000.0,
-                    "employees": 221000,
-                    "status": "Prospect",
-                    "contract_value": 0.0,
-                    "renewal_date": None
-                },
-                {
-                    "id": "acc_oracle",
-                    "name": "Oracle Corporation",
-                    "type": "Database",
-                    "tier": "Enterprise",
-                    "industry": "Technology",
-                    "revenue": 52900000000.0,
-                    "employees": 164000,
                     "status": "Active Customer",
-                    "contract_value": 1800000.0,
-                    "renewal_date": "2024-11-30"
+                    "address": "One Microsoft Way, Redmond, WA 98052",
+                    "notes": "Strategic partner for cloud solutions. Previous projects: AI Chatbot PoC (2023), Fabric Deployment (2024)."
                 },
                 {
-                    "id": "acc_aws",
-                    "name": "Amazon Web Services",
-                    "type": "Cloud Infrastructure",
-                    "tier": "Competitor",
-                    "industry": "Cloud Computing",
-                    "revenue": 90000000000.0,
-                    "employees": 1600000,
-                    "status": "Competitor",
-                    "contract_value": 0.0,
-                    "renewal_date": None
+                    "id": "acc_salesforce",
+                    "name": "Salesforce Inc",
+                    "category": "Enterprise",
+                    "tier": "Enterprise",
+                    "industry": "CRM Software",
+                    "status": "Active Customer",
+                    "address": "415 Mission Street, San Francisco, CA 94105",
+                    "notes": "Long-term customer. Recent engagement: Service Chatbot Rollout (2023). Interested in Dynamics integration."
                 },
                 {
                     "id": "acc_google",
                     "name": "Google LLC",
-                    "type": "Cloud Services",
-                    "tier": "Competitor",
+                    "category": "Strategic",
+                    "tier": "Strategic",
                     "industry": "Technology",
-                    "revenue": 307400000000.0,
-                    "employees": 190000,
-                    "status": "Competitor",
-                    "contract_value": 0.0,
-                    "renewal_date": None
+                    "status": "Active Customer",
+                    "address": "1600 Amphitheatre Parkway, Mountain View, CA 94043",
+                    "notes": "New customer as of 2024. Potential for large-scale chatbot deployment."
+                },
+                {
+                    "id": "acc_oracle",
+                    "name": "Oracle Corporation",
+                    "category": "Enterprise",
+                    "tier": "Enterprise",
+                    "industry": "Enterprise Software",
+                    "status": "Active Customer",
+                    "address": "2300 Oracle Way, Austin, TX 78741",
+                    "notes": "Data migration project in progress. Looking for additional database modernization opportunities."
                 },
                 {
                     "id": "acc_sap",
                     "name": "SAP SE",
-                    "type": "ERP",
-                    "tier": "Enterprise",
-                    "industry": "Enterprise Software",
-                    "revenue": 33800000000.0,
-                    "employees": 111000,
+                    "category": "Mid-Market",
+                    "tier": "Mid-Market",
+                    "industry": "ERP Software",
                     "status": "Prospect",
-                    "contract_value": 0.0,
-                    "renewal_date": None
+                    "address": "3999 West Chester Pike, Newtown Square, PA 19073",
+                    "notes": "Completed Fabric PoV in 2023. Exploring field service chatbot solutions."
+                },
+                {
+                    "id": "acc_aws",
+                    "name": "Amazon Web Services",
+                    "category": "Competitor",
+                    "tier": "Competitor",
+                    "industry": "Cloud Computing",
+                    "status": "Competitor",
+                    "address": "410 Terry Avenue North, Seattle, WA 98109",
+                    "notes": "Competitor relationship. Previous internal helpdesk bot project (2022)."
                 }
             ]
 
             for a in accounts:
+                notes_escaped = a["notes"].replace('"', '\\"').replace("'", "\\'")
                 q = f"""
                 g.addV('account')
                 .property('id','{a["id"]}')
                 .property('partitionKey','{a["id"]}')
                 .property('name','{a["name"]}')
-                .property('type','{a["type"]}')
+                .property('category','{a["category"]}')
                 .property('tier','{a["tier"]}')
                 .property('industry','{a["industry"]}')
-                .property('revenue',{a["revenue"]})
-                .property('employees',{a["employees"]})
                 .property('status','{a["status"]}')
-                .property('contract_value',{a["contract_value"]})
-                .property('renewal_date','{a["renewal_date"] or ""}')
+                .property('address','{a["address"]}')
+                .property('notes',"{notes_escaped}")
                 """
                 await self.gremlin_client.execute_query(q)
                 print(f"   Added account: {a['name']}")
@@ -792,16 +779,30 @@ class DataInitializer:
 
             # 6) SOWs (keep offering as a property for convenience, but we also link to offering vertex)
             sows = [
-                {"id":"sow_msft_ai_chatbot_2023",       "account":"acc_microsoft",  "title":"Microsoft AI Chatbot PoC",            "offering":"ai_chatbot",        "year":2023, "value":250000},
-                {"id":"sow_salesforce_ai_chatbot_2023", "account":"acc_salesforce", "title":"Salesforce Service Chatbot Rollout",  "offering":"ai_chatbot",        "year":2023, "value":300000},
-                {"id":"sow_google_ai_chatbot_2024",     "account":"acc_google",     "title":"Google Customer Support Chatbot",     "offering":"ai_chatbot",        "year":2024, "value":410000},
-                {"id":"sow_aws_ai_chatbot_2022",        "account":"acc_aws",        "title":"AWS Internal Helpdesk Bot",           "offering":"ai_chatbot",        "year":2022, "value":150000},
-                {"id":"sow_sap_ai_chatbot_2023",        "account":"acc_sap",        "title":"SAP Field Service Chatbot",           "offering":"ai_chatbot",        "year":2023, "value":210000},
+                # AI Chatbot SOWs
+                {"id":"sow_msft_ai_chatbot_2023",       "account":"acc_microsoft",  "title":"Microsoft AI Chatbot PoC",            "offering":"ai_chatbot",        "year":2023, "value":250000, "status":"Completed"},
+                {"id":"sow_salesforce_ai_chatbot_2023", "account":"acc_salesforce", "title":"Salesforce Service Chatbot Rollout",  "offering":"ai_chatbot",        "year":2023, "value":300000, "status":"Completed"},
+                {"id":"sow_google_ai_chatbot_2024",     "account":"acc_google",     "title":"Google Customer Support Chatbot",     "offering":"ai_chatbot",        "year":2024, "value":410000, "status":"Completed"},
+                {"id":"sow_aws_ai_chatbot_2022",        "account":"acc_aws",        "title":"AWS Internal Helpdesk Bot",           "offering":"ai_chatbot",        "year":2022, "value":150000, "status":"Completed"},
+                {"id":"sow_sap_ai_chatbot_2023",        "account":"acc_sap",        "title":"SAP Field Service Chatbot",           "offering":"ai_chatbot",        "year":2023, "value":210000, "status":"Completed"},
 
-                {"id":"sow_msft_fabric_2024",           "account":"acc_microsoft",  "title":"Microsoft Fabric Deployment",         "offering":"fabric_deployment", "year":2024, "value":560000},
-                {"id":"sow_salesforce_dynamics_2022",   "account":"acc_salesforce", "title":"Salesforce Dynamics Integration",      "offering":"dynamics",          "year":2022, "value":180000},
-                {"id":"sow_oracle_migration_2024",      "account":"acc_oracle",     "title":"Oracle Data Migration",                "offering":"data_migration",    "year":2024, "value":320000},
-                {"id":"sow_sap_fabric_2023",            "account":"acc_sap",        "title":"SAP Fabric Proof of Value",            "offering":"fabric_deployment", "year":2023, "value":120000},
+                # Fabric Deployment SOWs
+                {"id":"sow_msft_fabric_2024",           "account":"acc_microsoft",  "title":"Microsoft Fabric Deployment",         "offering":"fabric_deployment", "year":2024, "value":560000, "status":"Completed"},
+                {"id":"sow_sap_fabric_2023",            "account":"acc_sap",        "title":"SAP Fabric Proof of Value",            "offering":"fabric_deployment", "year":2023, "value":120000, "status":"Completed"},
+                {"id":"sow_oracle_fabric_2024",         "account":"acc_oracle",     "title":"Oracle Analytics Platform Migration",  "offering":"fabric_deployment", "year":2024, "value":280000, "status":"In Progress"},
+
+                # Dynamics Integration SOWs
+                {"id":"sow_salesforce_dynamics_2022",   "account":"acc_salesforce", "title":"Salesforce Dynamics Integration",      "offering":"dynamics",          "year":2022, "value":180000, "status":"Completed"},
+                {"id":"sow_salesforce_dynamics_2024",   "account":"acc_salesforce", "title":"Dynamics 365 Integration Phase 2",     "offering":"dynamics",          "year":2024, "value":280000, "status":"Completed"},
+                {"id":"sow_google_dynamics_2025",       "account":"acc_google",     "title":"Google Workspace Dynamics Connector",  "offering":"dynamics",          "year":2025, "value":195000, "status":"Proposal"},
+
+                # Data Migration SOWs
+                {"id":"sow_oracle_migration_2024",      "account":"acc_oracle",     "title":"Oracle Data Migration",                "offering":"data_migration",    "year":2024, "value":320000, "status":"In Progress"},
+                {"id":"sow_salesforce_migration_2024",  "account":"acc_salesforce", "title":"Salesforce Legacy Data Migration",     "offering":"data_migration",    "year":2024, "value":145000, "status":"Completed"},
+
+                # Additional recent SOWs
+                {"id":"sow_msft_teams_bot_2025",        "account":"acc_microsoft",  "title":"Teams Integration Chatbot",            "offering":"ai_chatbot",        "year":2025, "value":450000, "status":"Proposal"},
+                {"id":"sow_salesforce_ai_2025",         "account":"acc_salesforce", "title":"Service Cloud AI Assistant",           "offering":"ai_chatbot",        "year":2025, "value":195000, "status":"Qualification"},
             ]
             # offering name -> offering vertex id
             offering_id_by_name = {o["name"]: o["id"] for o in offerings}
@@ -816,6 +817,7 @@ class DataInitializer:
                 .property('offering','{sow['offering']}')
                 .property('year',{sow['year']})
                 .property('value',{sow['value']})
+                .property('status','{sow['status']}')
                 """
                 await self.gremlin_client.execute_query(q)
 
@@ -858,9 +860,15 @@ class DataInitializer:
                 "sow_aws_ai_chatbot_2022":       ["tech_aws_bedrock"],
                 "sow_sap_ai_chatbot_2023":       ["tech_azure_openai","tech_servicenow"],
                 "sow_msft_fabric_2024":          ["tech_ms_fabric"],
+                "sow_sap_fabric_2023":           ["tech_ms_fabric"],
+                "sow_oracle_fabric_2024":        ["tech_ms_fabric","tech_databricks"],
                 "sow_salesforce_dynamics_2022":  ["tech_ms_dynamics","tech_twilio"],
+                "sow_salesforce_dynamics_2024":  ["tech_ms_dynamics","tech_servicenow"],
+                "sow_google_dynamics_2025":      ["tech_ms_dynamics","tech_gcp_dialogflow"],
                 "sow_oracle_migration_2024":     ["tech_snowflake","tech_databricks"],
-                "sow_sap_fabric_2023":           ["tech_ms_fabric"]
+                "sow_salesforce_migration_2024": ["tech_snowflake","tech_ms_dynamics"],
+                "sow_msft_teams_bot_2025":       ["tech_azure_openai","tech_ms_teams"],
+                "sow_salesforce_ai_2025":        ["tech_aws_bedrock","tech_servicenow"]
             }
             for sow_id, tech_ids in sow_tech.items():
                 for tid in tech_ids:
@@ -868,15 +876,29 @@ class DataInitializer:
                     await self.gremlin_client.execute_query(q)
             print("   Linked SOWs to project-level tech.")
 
-            # 9) SOW similarity (unchanged)
+            # 9) SOW similarity (updated with new SOWs)
             sow_similarities = [
+                # AI Chatbot similarities
                 {"a":"sow_msft_ai_chatbot_2023","b":"sow_salesforce_ai_chatbot_2023","score":0.85,"note":"enterprise support chatbots"},
                 {"a":"sow_msft_ai_chatbot_2023","b":"sow_google_ai_chatbot_2024","score":0.80,"note":"customer service chatbots"},
+                {"a":"sow_msft_ai_chatbot_2023","b":"sow_msft_teams_bot_2025","score":0.90,"note":"Teams-based chatbot solutions"},
+                {"a":"sow_salesforce_ai_chatbot_2023","b":"sow_salesforce_ai_2025","score":0.88,"note":"Salesforce AI assistant evolution"},
                 {"a":"sow_salesforce_ai_chatbot_2023","b":"sow_aws_ai_chatbot_2022","score":0.70,"note":"IT/helpdesk assistant"},
                 {"a":"sow_google_ai_chatbot_2024","b":"sow_sap_ai_chatbot_2023","score":0.65,"note":"multilingual bot UX"},
                 {"a":"sow_aws_ai_chatbot_2022","b":"sow_sap_ai_chatbot_2023","score":0.60,"note":"FAQ intent modeling overlap"},
-                {"a":"sow_msft_ai_chatbot_2023","b":"sow_salesforce_dynamics_2022","score":0.60,"note":"conversational integration"},
+
+                # Fabric deployment similarities
                 {"a":"sow_msft_fabric_2024","b":"sow_sap_fabric_2023","score":0.80,"note":"Fabric deployments"},
+                {"a":"sow_msft_fabric_2024","b":"sow_oracle_fabric_2024","score":0.82,"note":"enterprise analytics migration"},
+                {"a":"sow_sap_fabric_2023","b":"sow_oracle_fabric_2024","score":0.75,"note":"Fabric platform adoption"},
+
+                # Dynamics integration similarities
+                {"a":"sow_salesforce_dynamics_2022","b":"sow_salesforce_dynamics_2024","score":0.95,"note":"phased Dynamics integration"},
+                {"a":"sow_salesforce_dynamics_2024","b":"sow_google_dynamics_2025","score":0.70,"note":"Dynamics 365 integration patterns"},
+                {"a":"sow_msft_ai_chatbot_2023","b":"sow_salesforce_dynamics_2022","score":0.60,"note":"conversational integration"},
+
+                # Data migration similarities
+                {"a":"sow_oracle_migration_2024","b":"sow_salesforce_migration_2024","score":0.78,"note":"legacy data migration strategies"},
                 {"a":"sow_oracle_migration_2024","b":"sow_salesforce_dynamics_2022","score":0.40,"note":"data migration overlap"},
             ]
             for sim in sow_similarities:

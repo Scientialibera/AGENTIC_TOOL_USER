@@ -14,7 +14,11 @@
       "Bash(az containerapp show:*)",
       "Bash(az containerapp revision list:*)",
       "Bash(az containerapp revision deactivate:*)",
-      "Bash(az containerapp revision show:*)"
+      "Bash(az containerapp revision show:*)",
+      "Bash(docker build:*)",
+      "Bash(docker push:*)",
+      "Bash(az acr login:*)",
+      "Bash(az containerapp list:*)"
     ],
     "deny": [],
     "ask": []
