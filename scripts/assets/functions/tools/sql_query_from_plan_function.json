@@ -1,0 +1,40 @@
+{
+  "id": "sql_query_from_plan_function",
+  "agent_type": "sql",
+  "function_name": "sql_query_from_plan_function",
+  "name": "query_sql_from_plan",
+  "description": "Execute a SQL query from a structured QueryPlan. Normalizes low-cardinality filter values using embeddings (e.g., 'UK' -> 'United Kingdom'), applies RBAC filters, and generates safe parameterized SQL.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "plan": {
+        "type": "object",
+        "description": "QueryPlan object with tables, select_fields, filters, joins, group_by, order_by, and limit"
+      }
+    },
+    "required": ["plan"]
+  },
+  "return_type": {
+    "type": "object",
+    "description": "Query results with data rows, generated SQL, and metadata"
+  },
+  "examples": [
+    {
+      "input": {
+        "plan": {
+          "tables": ["customers"],
+          "select_fields": ["country", "COUNT(*) as count"],
+          "filters": [{"table": "customers", "column": "country", "operator": "=", "value": "UK"}],
+          "group_by": ["country"]
+        }
+      },
+      "description": "Execute query plan with value normalization for 'UK'"
+    }
+  ],
+  "safety_guidelines": [
+    "Only allow SELECT queries",
+    "Enforce row limits to prevent large result sets",
+    "Low-cardinality values are normalized automatically",
+    "RBAC filters are applied automatically"
+  ]
+}

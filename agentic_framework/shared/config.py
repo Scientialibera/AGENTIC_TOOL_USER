@@ -60,6 +60,7 @@ class CosmosDBSettings(BaseSettings):
     prompts_container: str = Field(default="prompts", description="Prompts container")
     rbac_config_container: str = Field(default="rbac_config", description="RBAC config container")
     chat_container: str = Field(default="unified_data", description="Chat history container (unified)")
+    schema_metadata_container: str = Field(default="schema_metadata", description="Schema metadata container for text-to-SQL")
 
 
 class GremlinSettings(BaseSettings):
@@ -79,8 +80,33 @@ class GremlinSettings(BaseSettings):
     connection_timeout: int = Field(default=30, description="Connection timeout in seconds")
 
 
+class SqlSettings(BaseSettings):
+    """Unified SQL configuration for Fabric SQL and Azure SQL."""
+    
+    model_config = SettingsConfigDict(
+        env_prefix="SQL_",
+        extra="ignore",
+        populate_by_name=True
+    )
+    
+    endpoint: Optional[str] = Field(default=None, description="SQL endpoint (Fabric or Azure SQL)", alias='SQL_ENDPOINT')
+    database: str = Field(default="lakehouse_db", description="Database name", alias='SQL_DATABASE')
+    engine_type: str = Field(default="fabric", description="SQL engine type: fabric or azure_sql", alias='SQL_ENGINE_TYPE')
+    connection_timeout: int = Field(default=30, description="Connection timeout in seconds", alias='SQL_CONNECTION_TIMEOUT')
+    
+    # Legacy fabric-specific aliases for backward compatibility
+    @classmethod
+    def from_fabric_settings(cls, fabric_endpoint: Optional[str], fabric_database: str):
+        """Create SqlSettings from legacy Fabric environment variables."""
+        return cls(
+            endpoint=fabric_endpoint,
+            database=fabric_database,
+            engine_type="fabric"
+        )
+
+
 class FabricSettings(BaseSettings):
-    """Microsoft Fabric lakehouse configuration."""
+    """Microsoft Fabric lakehouse configuration (legacy, use SqlSettings)."""
     
     model_config = SettingsConfigDict(
         env_prefix="",
@@ -110,6 +136,10 @@ class FrameworkSettings(BaseSettings):
     dev_mode: bool = Field(default=False, description="Development mode (skips RBAC, returns dummy SQL data)", alias='DEV_MODE')
     bypass_token: bool = Field(default=False, description="Bypass JWT token validation for API and MCP endpoints", alias='BYPASS_TOKEN')
     environment: str = Field(default="development", description="Environment", alias='ENVIRONMENT')
+    
+    # RBAC configuration
+    rbac_enabled: bool = Field(default=True, description="Enable application-level RBAC", alias='RBAC_ENABLED')
+    rbac_mode: str = Field(default="cosmos", description="RBAC mode: cosmos, sql, or off", alias='RBAC_MODE')
     
     # Azure AD / Entra ID authentication
     azure_tenant_id: Optional[str] = Field(default=None, description="Azure AD tenant ID for JWT validation", alias='AZURE_TENANT_ID')
@@ -167,6 +197,7 @@ class FrameworkSettings(BaseSettings):
     cosmos: CosmosDBSettings
     gremlin: GremlinSettings
     fabric: FabricSettings
+    sql: SqlSettings
 
     @property
     def mcp_endpoints_dict(self) -> dict[str, str]:
@@ -182,9 +213,21 @@ class FrameworkSettings(BaseSettings):
 
 def get_settings() -> FrameworkSettings:
     """Get framework settings from environment."""
+    # Try to load SQL settings, fallback to Fabric settings for backward compatibility
+    try:
+        sql_settings = SqlSettings()
+    except Exception:
+        # If SQL_ env vars not set, use FABRIC_ env vars
+        fabric_temp = FabricSettings()
+        sql_settings = SqlSettings.from_fabric_settings(
+            fabric_endpoint=fabric_temp.sql_endpoint,
+            fabric_database=fabric_temp.database
+        )
+    
     return FrameworkSettings(
         aoai=AzureOpenAISettings(),
         cosmos=CosmosDBSettings(),
         gremlin=GremlinSettings(),
         fabric=FabricSettings(),
+        sql=sql_settings,
     )

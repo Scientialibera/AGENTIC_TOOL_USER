@@ -1,0 +1,37 @@
+{
+  "id": "sql_search_schema_function",
+  "agent_type": "sql",
+  "function_name": "sql_search_schema_function",
+  "name": "search_schema",
+  "description": "Search database schema using embeddings to find relevant tables and columns for a natural language question. Returns a compact schema slice suitable for query planning.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "question": {
+        "type": "string",
+        "description": "Natural language question to search schema for"
+      },
+      "top_k": {
+        "type": "integer",
+        "description": "Number of top relevant tables to return",
+        "default": 5
+      }
+    },
+    "required": ["question"]
+  },
+  "return_type": {
+    "type": "object",
+    "description": "Relevant schema information including table names and column details"
+  },
+  "examples": [
+    {
+      "input": {"question": "Show me revenue by country", "top_k": 3},
+      "description": "Find tables related to revenue and country"
+    }
+  ],
+  "safety_guidelines": [
+    "Read-only operation",
+    "Requires discover_schema to be run first",
+    "Uses vector embeddings for semantic matching"
+  ]
+}

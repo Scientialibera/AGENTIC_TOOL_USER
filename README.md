@@ -31,7 +31,12 @@ User Request → Orchestrator (Port 8000)
    - Routes tool calls to appropriate MCP servers using FastMCP client
 
 2. **MCP Servers** ([mcps/sql/server.py](agentic_framework/mcps/sql/server.py), [mcps/graph/server.py](agentic_framework/mcps/graph/server.py), [mcps/interpreter/server.py](agentic_framework/mcps/interpreter/server.py))
-   - **SQL MCP**: Uses internal LLM to convert natural language → SQL queries on Fabric lakehouse
+   - **SQL MCP**: Advanced text-to-SQL with semantic layer features
+     - Schema discovery with embeddings
+     - Low-cardinality value matching (e.g., "UK" → "United Kingdom")
+     - Structured query planning via QueryPlan
+     - Supports both Fabric SQL and Azure SQL
+     - See [docs/TEXT_TO_SQL.md](docs/TEXT_TO_SQL.md) for details
    - **Graph MCP**: Uses internal LLM to convert natural language → Gremlin queries for relationship discovery
    - **Interpreter MCP**: Uses Azure OpenAI Assistants API for code execution (math, graphs, data analysis)
    - Apply RBAC filtering via WHERE clause injection (SQL) or vertex filtering (Graph)
@@ -41,7 +46,8 @@ User Request → Orchestrator (Port 8000)
 3. **Shared Clients** ([shared/](agentic_framework/shared/))
    - `aoai_client.py`: Azure OpenAI wrapper with DefaultAzureCredential
    - `cosmos_client.py`: Cosmos DB NoSQL client for configuration/state
-   - `fabric_client.py`: Fabric lakehouse SQL client
+   - `sql_client.py`: Unified SQL client for Fabric SQL and Azure SQL with schema introspection
+   - `fabric_client.py`: Legacy Fabric lakehouse SQL client (use SqlClient instead)
    - `gremlin_client.py`: Cosmos DB Gremlin client
    - `account_resolver.py`: Fuzzy account matching with Levenshtein distance
    - `unified_service.py`: Conversation tracking and caching service
@@ -55,12 +61,15 @@ The framework uses `.env` in the **repository root** for configuration. Key sett
 - `DEV_MODE=true` - Bypasses RBAC and authentication, returns dummy data (no Azure connections needed)
 - `BYPASS_TOKEN=true` - Bypasses JWT token validation for API endpoints (for testing)
 - `DEBUG=true` - Enables verbose logging
+- `RBAC_ENABLED=true` - Enable application-level RBAC (default: true)
+- `RBAC_MODE=cosmos` - RBAC mode: cosmos, sql, or off (default: cosmos)
 - `MCP_ENDPOINTS={"graph_mcp": "http://localhost:8001/mcp", "interpreter_mcp": "http://localhost:8002/mcp", "sql_mcp": "http://localhost:8003/mcp"}` - JSON dictionary mapping MCP IDs to endpoints
 
 ### Azure Services (Production)
 - **Azure OpenAI**: `AOAI_ENDPOINT`, `AOAI_CHAT_DEPLOYMENT`, `AOAI_EMBEDDING_DEPLOYMENT`
 - **Cosmos DB**: `COSMOS_ENDPOINT`, `COSMOS_DATABASE_NAME`, container names for various data types
-- **Fabric SQL**: `FABRIC_SQL_ENDPOINT`, `FABRIC_SQL_DATABASE`
+- **SQL (Unified)**: `SQL_ENGINE_TYPE` (fabric or azure_sql), `SQL_ENDPOINT`, `SQL_DATABASE`
+- **Fabric SQL (Legacy)**: `FABRIC_SQL_ENDPOINT`, `FABRIC_SQL_DATABASE`
 - **Gremlin**: `AZURE_COSMOS_GREMLIN_ENDPOINT`, `AZURE_COSMOS_GREMLIN_DATABASE`
 
 ### Authentication (Production)
@@ -525,12 +534,82 @@ curl -X POST "https://$orchUrl/chat" `
 - Tools are filtered by `allowed_roles` in tool definition
 - Update `rbac_config` container in Cosmos DB to control which roles can access your MCP
 
+## Advanced Text-to-SQL Features
+
+The SQL MCP includes advanced text-to-SQL capabilities inspired by production semantic layer systems:
+
+### Key Features
+
+1. **Schema Discovery & Metadata** (`discover_schema` tool)
+   - Introspects database schema including tables, columns, foreign keys
+   - Reads SQL extended properties (MS_Description) for descriptions
+   - Detects low-cardinality columns (<=200 distinct values)
+   - Stores metadata with embeddings in Cosmos DB
+
+2. **Embedding-Based Table Selection** (`search_schema` tool)
+   - Uses vector search to find relevant tables for a question
+   - Returns compact schema slice for query planning
+
+3. **Structured Query Planning** (`plan_sql` tool)
+   - LLM generates a QueryPlan instead of raw SQL
+   - Includes tables, filters, aggregations, joins, group_by, order_by
+
+4. **Low-Cardinality Value Matching**
+   - Automatically normalizes filter values using embeddings
+   - Example: "UK" → "United Kingdom", "CA" → "California"
+   - Uses two-tier matching: exact match, then semantic similarity
+
+5. **Query Execution with RBAC** (`query_sql_from_plan` tool)
+   - Executes QueryPlan with value normalization
+   - Applies row-level security filters automatically
+   - Uses parameterized queries to prevent SQL injection
+
+### Documentation
+
+See [docs/TEXT_TO_SQL.md](docs/TEXT_TO_SQL.md) for comprehensive documentation including:
+- Usage examples
+- Configuration options
+- Best practices
+- Troubleshooting guide
+- Comparison with other systems (Cube.dev, Wren AI, MotherDuck)
+
+### Quick Start
+
+```python
+# 1. Discover schema (run once or when schema changes)
+await sql_mcp.discover_schema()
+
+# 2. Search for relevant tables
+schema = await sql_mcp.search_schema(
+    question="Show revenue by country for UK and France",
+    top_k=3
+)
+
+# 3. Generate query plan
+plan = await sql_mcp.plan_sql(
+    question="Show revenue by country for UK and France",
+    candidate_schema=schema["schema"]
+)
+
+# 4. Execute with value normalization and RBAC
+results = await sql_mcp.query_sql_from_plan(
+    plan=plan["plan"],
+    rbac_context={"email": "user@example.com"}
+)
+# "UK" automatically normalized to "United Kingdom"
+# RBAC filters automatically applied
+```
+
 ## RBAC Implementation
 
 The framework enforces RBAC at two levels:
 
 1. **MCP/Tool Access**: User roles determine which MCPs and tools are visible
 2. **Row-Level Security**: RBAC context is passed to MCP tools to filter data (SQL WHERE clauses, Gremlin vertex filters)
+
+Configuration:
+- `RBAC_ENABLED=true/false` - Toggle RBAC on/off
+- `RBAC_MODE=cosmos|sql|off` - Choose RBAC backend
 
 In **dev mode** (`DEV_MODE=true`), RBAC is bypassed and all users get admin access.
 

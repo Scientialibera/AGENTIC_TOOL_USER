@@ -1,0 +1,36 @@
+{
+  "id": "sql_plan_sql_function",
+  "agent_type": "sql",
+  "function_name": "sql_plan_sql_function",
+  "name": "plan_sql",
+  "description": "Generate a structured SQL query plan from natural language. Returns a QueryPlan with tables, fields, filters, and aggregations instead of raw SQL. This allows for value normalization and RBAC enforcement.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "question": {
+        "type": "string",
+        "description": "Natural language question to plan a query for"
+      },
+      "candidate_schema": {
+        "type": "string",
+        "description": "Optional pre-selected schema (from search_schema). If not provided, will search automatically."
+      }
+    },
+    "required": ["question"]
+  },
+  "return_type": {
+    "type": "object",
+    "description": "Structured QueryPlan with tables, select_fields, filters, joins, group_by, order_by, and limit"
+  },
+  "examples": [
+    {
+      "input": {"question": "Show total revenue by country for last 3 months"},
+      "description": "Generate a query plan for revenue aggregation"
+    }
+  ],
+  "safety_guidelines": [
+    "Returns structured plan, not executable SQL",
+    "Use query_sql_from_plan to execute the plan",
+    "Plan should be validated before execution"
+  ]
+}
