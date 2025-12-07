@@ -121,3 +121,44 @@ class Account(BaseModel):
     revenue: Optional[float] = None
     employee_count: Optional[int] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class FilterCondition(BaseModel):
+    """A single filter condition in a query plan."""
+    
+    table: str = Field(..., description="Table name")
+    column: str = Field(..., description="Column name")
+    operator: str = Field(..., description="Operator: =, !=, >, <, >=, <=, IN, LIKE, etc.")
+    value: Any = Field(..., description="Filter value (will be normalized for low-cardinality columns)")
+
+
+class QueryPlan(BaseModel):
+    """Structured query plan for SQL generation."""
+    
+    tables: List[str] = Field(..., description="List of tables to query")
+    select_fields: List[str] = Field(default_factory=list, description="Fields to select (table.column format)")
+    aggregations: List[Dict[str, str]] = Field(default_factory=list, description="Aggregations: [{function: 'SUM', field: 'amount', alias: 'total'}]")
+    filters: List[FilterCondition] = Field(default_factory=list, description="Filter conditions")
+    joins: List[Dict[str, str]] = Field(default_factory=list, description="Join specifications")
+    group_by: List[str] = Field(default_factory=list, description="GROUP BY fields")
+    order_by: List[Dict[str, str]] = Field(default_factory=list, description="ORDER BY: [{field: 'amount', direction: 'DESC'}]")
+    limit: Optional[int] = Field(default=None, description="LIMIT clause")
+
+
+class SchemaMetadata(BaseModel):
+    """Schema metadata for a table or column."""
+    
+    id: str = Field(..., description="Unique identifier (e.g., table:schema.table_name)")
+    kind: str = Field(..., description="Type: table, column, or relationship")
+    schema_name: Optional[str] = None
+    table_name: Optional[str] = None
+    column_name: Optional[str] = None
+    description: Optional[str] = None
+    data_type: Optional[str] = None
+    is_nullable: Optional[bool] = None
+    is_low_cardinality: Optional[bool] = None
+    distinct_values: List[str] = Field(default_factory=list, description="Distinct values for low-cardinality columns")
+    relationships: List[Dict[str, str]] = Field(default_factory=list, description="Foreign key relationships")
+    tags: List[str] = Field(default_factory=list, description="Business tags/concepts")
+    embedding: Optional[List[float]] = Field(default=None, description="Vector embedding for semantic search")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")

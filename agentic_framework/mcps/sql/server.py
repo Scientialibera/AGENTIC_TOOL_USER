@@ -18,9 +18,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.config import get_settings
-from shared.models import RBACContext
+from shared.models import RBACContext, SchemaMetadata, QueryPlan, FilterCondition
 from shared.aoai_client import AzureOpenAIClient
 from shared.fabric_client import FabricClient
+from shared.sql_client import SqlClient
 from shared.cosmos_client import CosmosDBClient
 from shared.account_resolver import AccountResolverService
 from shared.auth_provider import create_auth_provider
@@ -57,6 +58,7 @@ mcp = FastMCP(MCP_SERVER_NAME, auth=auth_provider)
 
 aoai_client: Optional[AzureOpenAIClient] = None
 fabric_client: Optional[FabricClient] = None
+sql_client: Optional[SqlClient] = None
 cosmos_client: Optional[CosmosDBClient] = None
 account_resolver: Optional[AccountResolverService] = None
 
@@ -68,12 +70,14 @@ _agent_tools_cache: Optional[List[Dict[str, Any]]] = None
 
 async def initialize_clients():
     """Initialize all required clients."""
-    global aoai_client, fabric_client, cosmos_client, account_resolver
+    global aoai_client, fabric_client, sql_client, cosmos_client, account_resolver
     
     if aoai_client is None:
         aoai_client = AzureOpenAIClient(settings.aoai)
     if fabric_client is None:
         fabric_client = FabricClient(settings.fabric)
+    if sql_client is None:
+        sql_client = SqlClient(settings.sql)
     if cosmos_client is None:
         cosmos_client = CosmosDBClient(settings.cosmos)
     if account_resolver is None:
@@ -707,6 +711,619 @@ def _get_dummy_sql_data(query: str, limit: int = 100) -> List[Dict[str, Any]]:
     ]
 
     return all_data[:limit]
+
+
+@mcp.tool()
+async def discover_schema(
+    request: Optional[Any] = None,
+    rbac_context: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Discover and introspect database schema including tables, columns, relationships.
+    
+    This tool performs a full schema discovery, detects low-cardinality columns,
+    and stores metadata in Cosmos DB for later use in semantic search.
+    
+    Args:
+        request: FastAPI Request object (injected by FastMCP)
+        rbac_context: User RBAC context (optional)
+    
+    Returns:
+        Dictionary with discovered schema information
+    """
+    from shared.auth_provider import verify_token_from_request
+    if request:
+        try:
+            await verify_token_from_request(request)
+            logger.debug("Schema discovery request authenticated")
+        except Exception as e:
+            logger.error("Schema discovery authentication failed", error=str(e))
+            return {
+                "success": False,
+                "error": f"Authentication failed: {str(e)}"
+            }
+    
+    try:
+        await initialize_clients()
+        
+        if settings.dev_mode:
+            return {
+                "success": True,
+                "message": "Dev mode: schema discovery skipped",
+                "tables": ["accounts", "contacts", "opportunities"]
+            }
+        
+        logger.info("🔍 Starting schema discovery")
+        
+        # Get schema metadata from SQL
+        schema_data = await sql_client.get_schema_metadata()
+        
+        # Process each table
+        table_count = 0
+        column_count = 0
+        low_card_count = 0
+        
+        for table_key, table_info in schema_data["tables"].items():
+            table_count += 1
+            schema_name = table_info["schema"]
+            table_name = table_info["name"]
+            
+            # Build table description for embedding
+            columns_desc = []
+            for col in table_info["columns"]:
+                col_key = f"{table_key}.{col['name']}"
+                col_desc = f"{col['name']} ({col['type']})"
+                
+                # Add description from extended properties if available
+                if col_key in schema_data["descriptions"]:
+                    col_desc += f": {schema_data['descriptions'][col_key]}"
+                
+                columns_desc.append(col_desc)
+                column_count += 1
+            
+            table_desc_text = f"Table: {table_key}\nColumns: {', '.join(columns_desc)}"
+            
+            # Add table description if available
+            if table_key in schema_data["descriptions"]:
+                table_desc_text += f"\nDescription: {schema_data['descriptions'][table_key]}"
+            
+            # Generate embedding for the table
+            table_embedding = None
+            try:
+                table_embedding = await aoai_client.create_embedding(table_desc_text)
+            except Exception as e:
+                logger.warning("Failed to create embedding for table", table=table_key, error=str(e))
+            
+            # Store table metadata
+            table_metadata = SchemaMetadata(
+                id=f"table:{table_key}",
+                kind="table",
+                schema_name=schema_name,
+                table_name=table_name,
+                description=schema_data["descriptions"].get(table_key),
+                relationships=[],
+                embedding=table_embedding,
+                metadata={
+                    "columns": table_info["columns"],
+                    "column_count": len(table_info["columns"])
+                }
+            )
+            
+            # Save to Cosmos
+            try:
+                await cosmos_client.upsert_item(
+                    container_name=settings.cosmos.schema_metadata_container,
+                    item=table_metadata.model_dump()
+                )
+            except Exception as e:
+                logger.warning("Failed to save table metadata", table=table_key, error=str(e))
+            
+            # Check cardinality for each column (sample first 10 columns to avoid long processing)
+            for col in table_info["columns"][:10]:
+                try:
+                    cardinality_info = await sql_client.get_column_cardinality(
+                        schema_name, table_name, col["name"]
+                    )
+                    
+                    if cardinality_info["is_low_cardinality"]:
+                        low_card_count += 1
+                        
+                        # Create embeddings for distinct values
+                        value_embeddings = []
+                        for value in cardinality_info["distinct_values"]:
+                            try:
+                                value_emb = await aoai_client.create_embedding(str(value))
+                                value_embeddings.append(value_emb)
+                            except Exception:
+                                pass
+                        
+                        # Store column metadata with values
+                        col_metadata = SchemaMetadata(
+                            id=f"column:{table_key}.{col['name']}",
+                            kind="column",
+                            schema_name=schema_name,
+                            table_name=table_name,
+                            column_name=col["name"],
+                            data_type=col["type"],
+                            is_nullable=col["nullable"],
+                            is_low_cardinality=True,
+                            distinct_values=cardinality_info["distinct_values"],
+                            metadata={
+                                "distinct_count": cardinality_info["distinct_count"],
+                                "value_embeddings": value_embeddings
+                            }
+                        )
+                        
+                        await cosmos_client.upsert_item(
+                            container_name=settings.cosmos.schema_metadata_container,
+                            item=col_metadata.model_dump()
+                        )
+                except Exception as e:
+                    logger.warning("Failed to check column cardinality", 
+                                 column=f"{table_key}.{col['name']}", error=str(e))
+        
+        logger.info("✅ Schema discovery complete",
+                   tables=table_count,
+                   columns=column_count,
+                   low_cardinality_columns=low_card_count)
+        
+        return {
+            "success": True,
+            "tables_discovered": table_count,
+            "columns_discovered": column_count,
+            "low_cardinality_columns": low_card_count,
+            "relationships": len(schema_data["relationships"])
+        }
+        
+    except Exception as e:
+        logger.error("❌ Schema discovery failed", error=str(e))
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@mcp.tool()
+async def search_schema(
+    question: str,
+    top_k: int = 5,
+    request: Optional[Any] = None,
+    rbac_context: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Search schema metadata using embeddings to find relevant tables and columns.
+    
+    Args:
+        question: Natural language question
+        top_k: Number of top relevant tables to return
+        request: FastAPI Request object (injected by FastMCP)
+        rbac_context: User RBAC context (optional)
+    
+    Returns:
+        Dictionary with relevant schema information
+    """
+    from shared.auth_provider import verify_token_from_request
+    if request:
+        try:
+            await verify_token_from_request(request)
+        except Exception as e:
+            logger.error("Schema search authentication failed", error=str(e))
+            return {
+                "success": False,
+                "error": f"Authentication failed: {str(e)}"
+            }
+    
+    try:
+        await initialize_clients()
+        
+        if settings.dev_mode:
+            return {
+                "success": True,
+                "message": "Dev mode: returning dummy schema",
+                "tables": ["accounts", "contacts", "opportunities"],
+                "schema": "Table: accounts (id, name, industry)\nTable: contacts (id, account_id, name)\nTable: opportunities (id, account_id, amount)"
+            }
+        
+        logger.info("🔍 Searching schema", question=question[:100])
+        
+        # Generate embedding for the question
+        question_embedding = await aoai_client.create_embedding(question)
+        
+        # Query schema metadata from Cosmos
+        # Note: For production, this should use Cosmos vector search or Azure AI Search
+        # For now, we'll retrieve all and do in-memory similarity
+        schema_items = await cosmos_client.query_items(
+            container_name=settings.cosmos.schema_metadata_container,
+            query="SELECT * FROM c WHERE c.kind = 'table'"
+        )
+        
+        if not schema_items:
+            return {
+                "success": False,
+                "error": "No schema metadata found. Run discover_schema first."
+            }
+        
+        # Calculate cosine similarity for each table
+        import numpy as np
+        
+        def cosine_similarity(a, b):
+            return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+        
+        scored_tables = []
+        for item in schema_items:
+            if item.get("embedding"):
+                score = cosine_similarity(question_embedding, item["embedding"])
+                scored_tables.append((score, item))
+        
+        # Sort by similarity and get top_k
+        scored_tables.sort(key=lambda x: x[0], reverse=True)
+        top_tables = scored_tables[:top_k]
+        
+        # Build schema description
+        schema_parts = []
+        relevant_tables = []
+        for score, table in top_tables:
+            table_name = f"{table['schema_name']}.{table['table_name']}"
+            relevant_tables.append(table_name)
+            
+            columns = table.get("metadata", {}).get("columns", [])
+            col_names = [f"{c['name']} ({c['type']})" for c in columns]
+            
+            schema_part = f"Table: {table_name}\nColumns: {', '.join(col_names)}"
+            if table.get("description"):
+                schema_part += f"\nDescription: {table['description']}"
+            
+            schema_parts.append(schema_part)
+        
+        schema_text = "\n\n".join(schema_parts)
+        
+        logger.info("✅ Schema search complete", relevant_tables=len(relevant_tables))
+        
+        return {
+            "success": True,
+            "relevant_tables": relevant_tables,
+            "schema": schema_text,
+            "top_k": len(top_tables)
+        }
+        
+    except Exception as e:
+        logger.error("❌ Schema search failed", error=str(e))
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@mcp.tool()
+async def plan_sql(
+    question: str,
+    candidate_schema: Optional[str] = None,
+    request: Optional[Any] = None,
+    rbac_context: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Generate a structured query plan from natural language.
+    
+    This tool asks the LLM to fill out a structured QueryPlan instead of generating SQL directly.
+    
+    Args:
+        question: Natural language question
+        candidate_schema: Optional pre-selected schema (from search_schema)
+        request: FastAPI Request object (injected by FastMCP)
+        rbac_context: User RBAC context (optional)
+    
+    Returns:
+        Dictionary with query plan
+    """
+    from shared.auth_provider import verify_token_from_request
+    if request:
+        try:
+            await verify_token_from_request(request)
+        except Exception as e:
+            logger.error("Query planning authentication failed", error=str(e))
+            return {
+                "success": False,
+                "error": f"Authentication failed: {str(e)}"
+            }
+    
+    try:
+        await initialize_clients()
+        
+        if settings.dev_mode:
+            # Return a dummy query plan
+            return {
+                "success": True,
+                "plan": {
+                    "tables": ["accounts"],
+                    "select_fields": ["id", "name", "industry"],
+                    "aggregations": [],
+                    "filters": [],
+                    "joins": [],
+                    "group_by": [],
+                    "order_by": [],
+                    "limit": 100
+                }
+            }
+        
+        logger.info("📋 Planning SQL query", question=question[:100])
+        
+        # If no candidate schema provided, search for one
+        if not candidate_schema:
+            search_result = await search_schema(question, top_k=3, request=request, rbac_context=rbac_context)
+            if search_result.get("success"):
+                candidate_schema = search_result.get("schema", "")
+        
+        # Build prompt for query planning
+        planning_prompt = f"""You are a SQL query planner. Given a natural language question and database schema,
+generate a structured query plan (NOT SQL code).
+
+Question: {question}
+
+Available Schema:
+{candidate_schema}
+
+Generate a QueryPlan with these fields:
+- tables: List of table names to query
+- select_fields: List of fields to select (use table.column format)
+- aggregations: List of aggregations like [{{"function": "SUM", "field": "amount", "alias": "total"}}]
+- filters: List of filter conditions like [{{"table": "accounts", "column": "industry", "operator": "=", "value": "Technology"}}]
+- joins: List of join specifications
+- group_by: List of GROUP BY fields
+- order_by: List of order specifications like [{{"field": "amount", "direction": "DESC"}}]
+- limit: Optional row limit
+
+Return a valid JSON QueryPlan object."""
+        
+        messages = [
+            {"role": "system", "content": planning_prompt},
+            {"role": "user", "content": question}
+        ]
+        
+        response = await aoai_client.create_chat_completion(messages=messages)
+        
+        content = response["choices"][0]["message"]["content"]
+        
+        # Parse the query plan from response
+        # Try to extract JSON from the response
+        import re
+        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        if json_match:
+            plan_dict = json.loads(json_match.group(0))
+            
+            # Validate with QueryPlan model
+            query_plan = QueryPlan(**plan_dict)
+            
+            logger.info("✅ Query plan generated", tables=query_plan.tables)
+            
+            return {
+                "success": True,
+                "plan": query_plan.model_dump()
+            }
+        else:
+            raise Exception("Could not extract JSON query plan from LLM response")
+        
+    except Exception as e:
+        logger.error("❌ Query planning failed", error=str(e))
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def normalize_filter_value(
+    filter_condition: FilterCondition
+) -> str:
+    """
+    Normalize a filter value using low-cardinality matching if applicable.
+    
+    Args:
+        filter_condition: Filter condition with table, column, operator, and value
+    
+    Returns:
+        Normalized value (or original if not low-cardinality)
+    """
+    try:
+        # Look up column metadata
+        col_key = f"column:{filter_condition.table}.{filter_condition.column}"
+        
+        items = await cosmos_client.query_items(
+            container_name=settings.cosmos.schema_metadata_container,
+            query="SELECT * FROM c WHERE c.id = @id",
+            parameters=[{"name": "@id", "value": col_key}]
+        )
+        
+        if not items or not items[0].get("is_low_cardinality"):
+            # Not low cardinality, return original value
+            return str(filter_condition.value)
+        
+        col_metadata = items[0]
+        distinct_values = col_metadata.get("distinct_values", [])
+        value_embeddings = col_metadata.get("metadata", {}).get("value_embeddings", [])
+        
+        # First, try case-insensitive exact match
+        raw_value = str(filter_condition.value).lower()
+        for distinct_val in distinct_values:
+            if str(distinct_val).lower() == raw_value:
+                logger.info("Exact match found", raw=filter_condition.value, matched=distinct_val)
+                return str(distinct_val)
+        
+        # If no exact match and we have embeddings, use semantic matching
+        if value_embeddings:
+            import numpy as np
+            
+            def cosine_similarity(a, b):
+                return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+            
+            # Generate embedding for the raw value
+            value_embedding = await aoai_client.create_embedding(str(filter_condition.value))
+            
+            # Find best match
+            best_score = 0
+            best_match = None
+            
+            for i, val_emb in enumerate(value_embeddings):
+                if val_emb:
+                    score = cosine_similarity(value_embedding, val_emb)
+                    if score > best_score:
+                        best_score = score
+                        best_match = distinct_values[i]
+            
+            # Use match if score is above threshold
+            if best_match and best_score > 0.8:
+                logger.info("Semantic match found", 
+                          raw=filter_condition.value, 
+                          matched=best_match, 
+                          score=best_score)
+                return str(best_match)
+        
+        # No good match found, return original and log warning
+        logger.warning("No good match for filter value",
+                      column=filter_condition.column,
+                      value=filter_condition.value,
+                      available=distinct_values)
+        return str(filter_condition.value)
+        
+    except Exception as e:
+        logger.warning("Failed to normalize filter value", error=str(e))
+        return str(filter_condition.value)
+
+
+@mcp.tool()
+async def query_sql_from_plan(
+    plan: Dict[str, Any],
+    request: Optional[Any] = None,
+    rbac_context: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Execute a SQL query from a structured query plan.
+    
+    This tool takes a QueryPlan, normalizes low-cardinality values,
+    applies RBAC filters, generates safe SQL, and executes it.
+    
+    Args:
+        plan: QueryPlan dictionary
+        request: FastAPI Request object (injected by FastMCP)
+        rbac_context: User RBAC context for row-level security
+    
+    Returns:
+        Dictionary with query results
+    """
+    from shared.auth_provider import verify_token_from_request
+    if request:
+        try:
+            await verify_token_from_request(request)
+        except Exception as e:
+            logger.error("Query execution authentication failed", error=str(e))
+            return {
+                "success": False,
+                "error": f"Authentication failed: {str(e)}"
+            }
+    
+    try:
+        await initialize_clients()
+        
+        # Parse and validate query plan
+        query_plan = QueryPlan(**plan)
+        
+        if settings.dev_mode:
+            return {
+                "success": True,
+                "message": "Dev mode: dummy data",
+                "data": _get_dummy_sql_data("", 100),
+                "source": "dummy_sql"
+            }
+        
+        logger.info("🗃️ Executing query from plan", tables=query_plan.tables)
+        
+        # Normalize filter values for low-cardinality columns
+        for filter_cond in query_plan.filters:
+            original_value = filter_cond.value
+            normalized_value = await normalize_filter_value(filter_cond)
+            if normalized_value != str(original_value):
+                logger.info("Normalized filter value", 
+                          column=filter_cond.column,
+                          original=original_value,
+                          normalized=normalized_value)
+                filter_cond.value = normalized_value
+        
+        # Build SQL from plan
+        # This is a simplified SQL generator - production would need more robust handling
+        select_clause = "SELECT "
+        if query_plan.select_fields:
+            select_clause += ", ".join(query_plan.select_fields)
+        else:
+            select_clause += "*"
+        
+        # Add aggregations
+        if query_plan.aggregations:
+            agg_parts = []
+            for agg in query_plan.aggregations:
+                agg_expr = f"{agg['function']}({agg['field']})"
+                if agg.get('alias'):
+                    agg_expr += f" AS {agg['alias']}"
+                agg_parts.append(agg_expr)
+            if query_plan.select_fields:
+                select_clause += ", " + ", ".join(agg_parts)
+            else:
+                select_clause = "SELECT " + ", ".join(agg_parts)
+        
+        from_clause = f" FROM {query_plan.tables[0]}"
+        
+        # Build WHERE clause
+        where_parts = []
+        for filter_cond in query_plan.filters:
+            where_parts.append(f"{filter_cond.column} {filter_cond.operator} '{filter_cond.value}'")
+        
+        # Add RBAC filters
+        if rbac_context and settings.rbac_enabled:
+            user_email = rbac_context.get("email", "")
+            if user_email:
+                where_parts.append(f"(owner_email = '{user_email}' OR assigned_to = '{user_email}')")
+        
+        where_clause = ""
+        if where_parts:
+            where_clause = " WHERE " + " AND ".join(where_parts)
+        
+        # GROUP BY clause
+        group_by_clause = ""
+        if query_plan.group_by:
+            group_by_clause = " GROUP BY " + ", ".join(query_plan.group_by)
+        
+        # ORDER BY clause
+        order_by_clause = ""
+        if query_plan.order_by:
+            order_parts = [f"{o['field']} {o.get('direction', 'ASC')}" for o in query_plan.order_by]
+            order_by_clause = " ORDER BY " + ", ".join(order_parts)
+        
+        # LIMIT clause
+        limit_clause = ""
+        if query_plan.limit:
+            limit_clause = f" LIMIT {query_plan.limit}"
+        
+        # Combine all parts
+        sql_query = select_clause + from_clause + where_clause + group_by_clause + order_by_clause + limit_clause
+        
+        logger.info("Generated SQL from plan", sql=sql_query[:200])
+        
+        # Execute the query
+        results = await sql_client.execute_query(sql_query)
+        
+        logger.info("✅ Query executed from plan", row_count=len(results))
+        
+        return {
+            "success": True,
+            "query": sql_query,
+            "row_count": len(results),
+            "data": results,
+            "source": "sql_from_plan"
+        }
+        
+    except Exception as e:
+        logger.error("❌ Query execution from plan failed", error=str(e))
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 
 if __name__ == "__main__":
