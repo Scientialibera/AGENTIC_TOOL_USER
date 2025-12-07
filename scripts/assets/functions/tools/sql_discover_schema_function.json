@@ -1,0 +1,27 @@
+{
+  "id": "sql_discover_schema_function",
+  "agent_type": "sql",
+  "function_name": "sql_discover_schema_function",
+  "name": "discover_schema",
+  "description": "Discover and introspect database schema including tables, columns, data types, relationships, and low-cardinality values. Stores metadata in Cosmos DB for semantic search.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  },
+  "return_type": {
+    "type": "object",
+    "description": "Schema discovery results with table count, column count, and relationships found"
+  },
+  "examples": [
+    {
+      "input": {},
+      "description": "Discover all tables and columns in the database"
+    }
+  ],
+  "safety_guidelines": [
+    "Read-only operation",
+    "May take time for large databases",
+    "Run periodically or when schema changes"
+  ]
+}
