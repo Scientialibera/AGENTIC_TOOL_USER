@@ -1246,9 +1246,16 @@ async def query_sql_from_plan(
                           normalized=normalized_value)
                 filter_cond.value = normalized_value
         
-        # Build SQL from plan
+        # Build SQL from plan using parameterized queries
         # This is a simplified SQL generator - production would need more robust handling
+        parameters = []
+        
+        # Build SELECT clause with TOP for SQL Server/Azure SQL
         select_clause = "SELECT "
+        if query_plan.limit:
+            # SQL Server/Azure SQL use TOP instead of LIMIT
+            select_clause += f"TOP {query_plan.limit} "
+        
         if query_plan.select_fields:
             select_clause += ", ".join(query_plan.select_fields)
         else:
@@ -1265,20 +1272,29 @@ async def query_sql_from_plan(
             if query_plan.select_fields:
                 select_clause += ", " + ", ".join(agg_parts)
             else:
-                select_clause = "SELECT " + ", ".join(agg_parts)
+                select_clause = "SELECT "
+                if query_plan.limit:
+                    select_clause += f"TOP {query_plan.limit} "
+                select_clause += ", ".join(agg_parts)
         
         from_clause = f" FROM {query_plan.tables[0]}"
         
-        # Build WHERE clause
+        # Build WHERE clause with parameterized values
         where_parts = []
         for filter_cond in query_plan.filters:
-            where_parts.append(f"{filter_cond.column} {filter_cond.operator} '{filter_cond.value}'")
+            # Use parameterized queries to prevent SQL injection
+            param_placeholder = "?"
+            where_parts.append(f"{filter_cond.column} {filter_cond.operator} {param_placeholder}")
+            parameters.append(filter_cond.value)
         
-        # Add RBAC filters
+        # Add RBAC filters with parameterized values
         if rbac_context and settings.rbac_enabled:
             user_email = rbac_context.get("email", "")
             if user_email:
-                where_parts.append(f"(owner_email = '{user_email}' OR assigned_to = '{user_email}')")
+                # Use parameterized query for RBAC filter
+                where_parts.append(f"(owner_email = ? OR assigned_to = ?)")
+                parameters.append(user_email)
+                parameters.append(user_email)
         
         where_clause = ""
         if where_parts:
@@ -1295,18 +1311,13 @@ async def query_sql_from_plan(
             order_parts = [f"{o['field']} {o.get('direction', 'ASC')}" for o in query_plan.order_by]
             order_by_clause = " ORDER BY " + ", ".join(order_parts)
         
-        # LIMIT clause
-        limit_clause = ""
-        if query_plan.limit:
-            limit_clause = f" LIMIT {query_plan.limit}"
+        # Combine all parts (no LIMIT clause since we use TOP in SELECT)
+        sql_query = select_clause + from_clause + where_clause + group_by_clause + order_by_clause
         
-        # Combine all parts
-        sql_query = select_clause + from_clause + where_clause + group_by_clause + order_by_clause + limit_clause
+        logger.info("Generated SQL from plan", sql=sql_query[:200], param_count=len(parameters))
         
-        logger.info("Generated SQL from plan", sql=sql_query[:200])
-        
-        # Execute the query
-        results = await sql_client.execute_query(sql_query)
+        # Execute the query with parameters
+        results = await sql_client.execute_query(sql_query, parameters=parameters)
         
         logger.info("✅ Query executed from plan", row_count=len(results))
         
