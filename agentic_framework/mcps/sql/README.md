@@ -1,91 +1,44 @@
-# SQL MCP Server
+# SQL MCP Server (caller-provided T-SQL)
 
-Provides SQL query capabilities for the agentic framework.
+Executes caller-supplied SELECT T-SQL against Azure SQL (or Fabric SQL when configured). No internal SQL agent or LLM generation is used.
 
-## Features
+## What it does
+- Tools exposed: `sql_query`, `list_tables`, `list_columns`, `get_schema`.
+- Safety: SELECT-only; injects `TOP <limit>` when a limit is provided and query lacks TOP.
+- Embedding warmup: preloads schema/value metadata from Cosmos and backfills embeddings via Azure OpenAI when enabled.
+- Account resolver/value matching: uses cached Cosmos metadata; does not rewrite SQL.
 
-- Natural language to SQL query translation
-- Microsoft Fabric lakehouse support
-- Fuzzy account name matching
-- Dev mode with dummy data
-- Query result caching
-
-## Development
-
-### Local Setup
-
-```bash
-cd mcps/sql
+## Run locally
+```pwsh
+cd agentic_framework
 pip install -r requirements.txt
-python server.py
+python mcps/sql/server.py    # http://localhost:8003/mcp
+```
+Dev mode: set `[framework].dev_mode = true` in `config.toml` to return dummy rows.
+
+## Config highlights
+- `config.toml` is the single config source (no .env needed).
+- Azure SQL token auth via DefaultAzureCredential; scope `https://database.windows.net/.default`.
+- Cosmos containers required: `prompts`, `agent_functions`, `sql_schema`, `table_metadata`, `value_mappings`.
+- Embeddings: enabled/disabled via `[text_to_sql]` flags.
+
+## Tool shapes (also in `scripts/assets/functions/tools/`)
+- `sql_query`: `{ query (string, SELECT T-SQL), limit (int, optional), accounts_mentioned (array, optional), rbac_context (object, optional) }`
+- `list_tables`: no parameters
+- `list_columns`: `{ table: string }`
+- `get_schema`: no parameters
+
+## Cosmos sync
+Upload prompts, tools, and schema JSON to Cosmos:
+```pwsh
+python scripts/test_env/upload_artifacts.py
 ```
 
-Server will start on http://localhost:8001
-
-### Environment Variables
-
-Required:
-- `AOAI_ENDPOINT` - Azure OpenAI endpoint
-- `AOAI_CHAT_DEPLOYMENT` - Chat model deployment name
-- `COSMOS_ENDPOINT` - Cosmos DB endpoint
-- `COSMOS_DATABASE_NAME` - Database name
-
-Optional:
-- `FABRIC_SQL_ENDPOINT` - Fabric SQL endpoint
-- `FABRIC_SQL_DATABASE` - Fabric database name
-- `DEV_MODE=true` - Enable dev mode with dummy data
-
-### Docker Build
-
-```bash
-# From agentic_framework root
-docker build -t sql-mcp -f mcps/sql/Dockerfile .
-docker run -p 8001:8001 --env-file .env sql-mcp
+## Quick smoke
+```pwsh
+python agentic_framework/mcp_test.py
 ```
 
-### Testing
-
-```bash
-# Health check
-curl http://localhost:8001/health
-
-# Test tool (via orchestrator)
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [{"role": "user", "content": "Show contacts at Microsoft"}],
-    "user_id": "test@example.com"
-  }'
-```
-
-## Tools
-
-### sql_query
-
-Execute SQL queries against Fabric lakehouse data.
-
-**Parameters:**
-- `query` (string, required): Natural language query
-- `accounts_mentioned` (array, optional): Account names to resolve
-- `limit` (integer, optional): Max results (default: 100)
-- `rbac_context` (object, optional): User RBAC context
-
-**Returns:**
-- `success` (boolean): Operation status
-- `data` (array): Query results
-- `count` (integer): Number of results
-- `query_executed` (string): Actual SQL query
-
-## Architecture
-
-```
-SQL MCP Server
- Azure OpenAI (query generation)
- Account Resolver (fuzzy matching)
- Fabric SQL Client (query execution)
- Cosmos DB (result caching)
-```
-
-## Production Deployment
-
-See [../deploy/deploy-aca.ps1](../deploy/deploy-aca.ps1) for Azure Container Apps deployment.
+## Troubleshooting
+- If `sql_query` fails while `sys.tables` works: verify table/column names and Azure SQL permissions; errors surface retry root cause.
+- Port busy: `Get-NetTCPConnection -LocalPort 8003 | Select OwningProcess` then `Stop-Process -Id <pid>`.

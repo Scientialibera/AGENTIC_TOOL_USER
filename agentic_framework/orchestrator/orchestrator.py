@@ -225,8 +225,8 @@ class OrchestratorAgent:
         rbac_context: RBACContext
     ) -> List[Dict[str, Any]]:
         """Load all tool definitions from MCPs."""
-        # Get all tools directly from discovery service
-        all_tools_raw = await self.discovery_service.get_all_available_tools()
+        # Get all tools directly from discovery service (force refresh to avoid stale caches)
+        all_tools_raw = await self.discovery_service.get_all_available_tools(force_refresh=True)
         
         all_tools = []
         for tool in all_tools_raw:
@@ -239,7 +239,11 @@ class OrchestratorAgent:
                 }
             }
             all_tools.append(tool_schema)
-        
+        logger.info(
+            "Tools loaded for orchestration",
+            tool_count=len(all_tools),
+            tool_names=[t["function"]["name"] for t in all_tools],
+        )
         return all_tools
 
     async def _execute_tool_calls(

@@ -15,17 +15,13 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from dotenv import load_dotenv
-
-# Load environment variables from root .env file
-env_path = Path(__file__).parent.parent.parent / ".env"
-load_dotenv(env_path)
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from openai import AsyncAzureOpenAI
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+from shared.config import get_settings
 
 
 async def test_code_interpreter():
@@ -35,14 +31,14 @@ async def test_code_interpreter():
     print(" Testing Azure OpenAI Assistants Code Interpreter API")
     print("="*70)
     
-    # Get configuration from environment
-    endpoint = os.getenv("AOAI_ENDPOINT")
-    deployment = os.getenv("AOAI_CHAT_DEPLOYMENT", "gpt-4o")
+    # Get configuration from config.toml first, then environment overrides
+    settings = get_settings()
+    endpoint = settings.aoai.endpoint or os.getenv("AOAI_ENDPOINT")
+    deployment = settings.aoai.chat_deployment or os.getenv("AOAI_CHAT_DEPLOYMENT", "gpt-4o")
     api_key = os.getenv("AOAI_API_KEY")  # Optional: if set, use key instead of managed identity
-    
+
     if not endpoint:
-        print("\n✗ Error: AOAI_ENDPOINT not set in environment")
-        print(f"   Tried to load from: {env_path}")
+        print("\n✗ Error: AOAI endpoint missing (set azure.openai.endpoint in config.toml or AOAI_ENDPOINT env var)")
         return
     
     print(f"\n  Endpoint: {endpoint}")

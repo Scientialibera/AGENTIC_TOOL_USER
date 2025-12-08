@@ -18,7 +18,16 @@
       "Bash(docker build:*)",
       "Bash(docker push:*)",
       "Bash(az acr login:*)",
-      "Bash(az containerapp list:*)"
+      "Bash(az containerapp list:*)",
+      "Bash(az account set:*)",
+      "Bash(az role assignment create:*)",
+      "Bash(az role assignment list:*)",
+      "Bash(az account:*)",
+      "Bash(az cognitiveservices account deployment list:*)",
+      "Bash(printenv:*)",
+      "Bash(git rm:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nAdd value_mappings feature for SQL MCP and production cleanup\n\nThis commit adds the value_mappings feature to the SQL MCP server, allowing automatic\nresolution of user-provided values to exact database values for low-cardinality columns.\n\nKey Features:\n- SQL MCP now accepts value_mappings array parameter for case-insensitive value matching\n- Automatically replaces user values with exact database values before query execution\n- Supports multi-word values (e.g., \"closed won\" -> \"Closed Won\")\n- Works with complex queries including JOINs, CTEs, CASE statements, and aggregations\n\nNew Services:\n- azure_sql_client.py: Azure SQL database client with Azure AD auth\n- rbac_service.py: Row-level security and access control\n- table_discovery_service.py: Schema discovery and caching\n- value_matching_service.py: Fuzzy value matching with embeddings\n\nFunction Definitions:\n- sql_query_function.json: Updated with value_mappings parameter\n- get_schema_function.json: New schema discovery tool\n- list_tables_function.json: List available tables\n- list_columns_function.json: List columns with distinct values\n\nProduction Tests:\n- test_real_schema.py: Tests with actual Azure SQL schema\n- test_complex_value_mappings.py: Complex query validation\n- test_orchestrator_end_to_end.py: End-to-end orchestrator tests\n- VALUE_MAPPINGS_TEST_RESULTS.md: Comprehensive test documentation\n\nRepository Cleanup:\n- Removed deprecated graph and interpreter MCPs\n- Removed old frontend React application\n- Updated .gitignore for logs, temp files, and local configs\n- Added pyproject.toml for Python packaging\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []

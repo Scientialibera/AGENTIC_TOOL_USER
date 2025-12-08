@@ -10,7 +10,6 @@ openai
 httpx
 structlog
 tenacity
-gremlinpython
 pyodbc
 rapidfuzz
 PyJWT[crypto]

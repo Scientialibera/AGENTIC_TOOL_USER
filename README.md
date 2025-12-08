@@ -1,404 +1,221 @@
-## Overview
+## Text-to-SQL Agentic Framework (SQL-only)
 
-This is an **agentic framework** built on **FastMCP** for orchestrating multi-agent workflows with Azure services. The system consists of:
+This repo now serves a single SQL MCP plus an optional orchestrator. All graph/interpreter/front-end content has been removed.
 
-- **Orchestrator Agent**: Central coordinator that discovers MCPs from configured endpoints, routes requests, and aggregates responses using Azure OpenAI
-- **MCP Servers**: Specialized Model Context Protocol servers (SQL, Graph, Interpreter) that execute domain-specific queries
-- **RBAC System**: Role-based access control with row-level security via Cosmos DB configuration
-- **Account Resolution**: Fuzzy matching service for handling typos and abbreviations in account names
+### Current Architecture
+- **SQL MCP (8003)**: Executes caller-provided T-SQL only (no internal SQL agent/LLM). Tools: `sql_query`, `list_tables`, `list_columns`, `get_schema`.
+- **Orchestrator (8000)**: Optional router/planner that discovers the SQL tools via MCP HTTP.
+- **Shared services**: Cosmos DB (schema + tool defs + embeddings), Azure SQL (primary), optional Fabric SQL, Azure OpenAI for embeddings only, account resolver/value matching services.
 
-The framework supports both production and dev mode operation.
+### Azure Resources
+- Cosmos DB SQL API containers: `prompts`, `agent_functions`, `sql_schema`, `table_metadata`, `value_mappings` (Gremlin not required).
+- Azure SQL Database (token auth via DefaultAzureCredential).
+- Azure OpenAI (embeddings deployment; chat not used by SQL MCP).
 
-## Architecture
+### Configuration (single `config.toml`)
+Key sections that matter now:
+```toml
+[framework]
+dev_mode = false
+bypass_token = true
 
+[azure.sql]
+enabled = true
+server = "<server>.database.windows.net"
+database = "<database>"
+authentication = "azure_ad"
+token_scope = "https://database.windows.net/.default"
+
+[text_to_sql]
+enable_embeddings = true
+enable_table_discovery = true
+enable_value_matching = true
+max_tables_per_query = 5
+
+[mcp.endpoints]
+sql_mcp = "http://localhost:8003/mcp"
 ```
-User Request → Orchestrator (Port 8000)
-                     ↓
-         ┌───────────┴───────────────────┐
-         ↓                   ↓            ↓
-    Graph MCP (8001)   Interpreter   SQL MCP (8003)
-         ↓              MCP (8002)        ↓
-    Gremlin/Cosmos         ↓         Fabric SQL
-                     Code Execution
-```
+Secrets stay in environment/Managed Identity; no `.env` is required.
 
-### Key Components
-
-1. **Orchestrator** ([orchestrator/orchestrator.py](agentic_framework/orchestrator/orchestrator.py))
-   - Discovers MCPs from endpoints configured via `MCP_ENDPOINTS` environment variable
-   - Calls MCP servers directly via HTTP to fetch their tool definitions
-   - Multi-round planning loop using Azure OpenAI function calling
-   - Routes tool calls to appropriate MCP servers using FastMCP client
-
-2. **MCP Servers** ([mcps/sql/server.py](agentic_framework/mcps/sql/server.py), [mcps/graph/server.py](agentic_framework/mcps/graph/server.py), [mcps/interpreter/server.py](agentic_framework/mcps/interpreter/server.py))
-   - **SQL MCP**: Uses internal LLM to convert natural language → SQL queries on Fabric lakehouse
-   - **Graph MCP**: Uses internal LLM to convert natural language → Gremlin queries for relationship discovery
-   - **Interpreter MCP**: Uses Azure OpenAI Assistants API for code execution (math, graphs, data analysis)
-   - Apply RBAC filtering via WHERE clause injection (SQL) or vertex filtering (Graph)
-   - Support JWT authentication in production mode (bypassed in dev mode)
-   - Return structured results to orchestrator
-
-3. **Shared Clients** ([shared/](agentic_framework/shared/))
-   - `aoai_client.py`: Azure OpenAI wrapper with DefaultAzureCredential
-   - `cosmos_client.py`: Cosmos DB NoSQL client for configuration/state
-   - `fabric_client.py`: Fabric lakehouse SQL client
-   - `gremlin_client.py`: Cosmos DB Gremlin client
-   - `account_resolver.py`: Fuzzy account matching with Levenshtein distance
-   - `unified_service.py`: Conversation tracking and caching service
-   - `auth_provider.py`: JWT token validation (production) or bypass (dev mode)
-
-## Environment Configuration
-
-The framework uses `.env` in the **repository root** for configuration. Key settings:
-
-### Framework Settings
-- `DEV_MODE=true` - Bypasses RBAC and authentication, returns dummy data (no Azure connections needed)
-- `BYPASS_TOKEN=true` - Bypasses JWT token validation for API endpoints (for testing)
-- `DEBUG=true` - Enables verbose logging
-- `MCP_ENDPOINTS={"graph_mcp": "http://localhost:8001/mcp", "interpreter_mcp": "http://localhost:8002/mcp", "sql_mcp": "http://localhost:8003/mcp"}` - JSON dictionary mapping MCP IDs to endpoints
-
-### Azure Services (Production)
-- **Azure OpenAI**: `AOAI_ENDPOINT`, `AOAI_CHAT_DEPLOYMENT`, `AOAI_EMBEDDING_DEPLOYMENT`
-- **Cosmos DB**: `COSMOS_ENDPOINT`, `COSMOS_DATABASE_NAME`, container names for various data types
-- **Fabric SQL**: `FABRIC_SQL_ENDPOINT`, `FABRIC_SQL_DATABASE`
-- **Gremlin**: `AZURE_COSMOS_GREMLIN_ENDPOINT`, `AZURE_COSMOS_GREMLIN_DATABASE`
-
-### Authentication (Production)
-- `AZURE_TENANT_ID` - Azure AD tenant ID for JWT validation (required)
-- `AZURE_AUDIENCE` - Expected audience in JWT tokens (optional, leave unset to skip audience validation and only validate issuer/tenant)
-
-All Azure services use **DefaultAzureCredential** from `azure.identity`. For local dev, use `az login`. For production, configure Managed Identity with proper RBAC roles.
-
-## Running the Framework
-
-### Development Mode (No Azure Resources)
-
-**Option 1: Using the helper script (PowerShell)**
-```powershell
-# Starts all MCPs and orchestrator in separate windows
-.\agentic_framework\deploy\start-local.ps1
-```
-
-**Option 2: Manual startup (separate terminals)**
-```bash
-# Set dev mode in .env
-echo "DEV_MODE=true" >> .env
-echo "BYPASS_TOKEN=true" >> .env
-
-# Start MCP servers (in separate terminals, from repository root)
+### Run
+```pwsh
 cd agentic_framework
-python -m mcps.graph.server       # Terminal 1, port 8001
-python -m mcps.interpreter.server # Terminal 2, port 8002
-python -m mcps.sql.server         # Terminal 3, port 8003
+pip install -r requirements.txt
+python mcps/sql/server.py          # SQL MCP on 8003
+# optional
+# python orchestrator/app.py      # Orchestrator on 8000
+```
+Dev mode: set `[framework].dev_mode = true` to return dummy SQL rows without Azure.
 
-# Start orchestrator
-python -m orchestrator.app        # Terminal 4, port 8000
-# OR
-uvicorn orchestrator.app:app --reload --port 8000
+### SQL MCP Behavior (no internal LLM)
+- `sql_query` executes caller-supplied SELECT T-SQL; if no `TOP` and a limit is provided, it injects `TOP <limit>`.
+- Safety: rejects non-SELECT statements.
+- Embedding warmup: loads table/value metadata from Cosmos and backfills embeddings using Azure OpenAI when enabled.
+- Account resolver/value matching: cached services from Cosmos metadata; metadata only (no query rewriting by LLM).
+- RBAC context can be passed through `rbac_context` but no automatic clause generation occurs.
+
+### Tool Definitions (Cosmos-synced)
+Stored at `scripts/assets/functions/tools/` and uploaded with `python scripts/test_env/upload_artifacts.py`:
+- `sql_query_function.json`
+- `list_tables_function.json`
+- `list_columns_function.json`
+- `get_schema_function.json`
+No other tool or agent JSON remains.
+
+### Schema and Embeddings
+- Schema seed JSON: `scripts/assets/schema/salesforce_schema.json` (Account/Contact/Opportunity/Case/Lead tables).
+- Embedding caches: `table_metadata` and `value_mappings` containers; `_ensure_*_embeddings` runs on startup when embeddings are enabled.
+
+### Quick Smoke Checks
+```pwsh
+# List tools via MCP client
+python agentic_framework/mcp_test.py
+
+# Direct sql_query (T-SQL only)
+python - <<'PY'
+import asyncio
+from fastmcp import Client
+
+async def main():
+    client = Client('http://localhost:8003/mcp')
+    async with client:
+        res = await client.call_tool('sql_query', {'query': 'SELECT TOP 1 name FROM sys.tables'})
+        print(res)
+
+asyncio.run(main())
+PY
 ```
 
-### Production Mode
-1. Ensure Azure authentication is configured (`az login` or Managed Identity)
-2. Set `DEV_MODE=false` and `BYPASS_TOKEN=false` in `.env`
-3. Configure `AZURE_TENANT_ID` for JWT validation (AZURE_AUDIENCE is optional)
-4. Initialize Cosmos DB containers (see [Cosmos DB Setup](#cosmos-db-setup))
-5. Upload artifacts: `python scripts/test_env/init_data.py`
-6. Start servers as above
+### Cosmos Resync
+Use the lightweight uploader (no Gremlin dependency):
+```pwsh
+python scripts/test_env/upload_artifacts.py
+```
+Uploads prompts, function JSONs, and schema JSON to the configured Cosmos containers.
 
-## Development Scripts
+### Troubleshooting
+- If `sql_query` fails but `sys.tables` works, check table/column names and Azure SQL permissions; errors now surface tenacity root causes.
+- Port in use on restart: `Get-NetTCPConnection -LocalPort 8003 | Select OwningProcess` then `Stop-Process -Id <pid>`.
+- ODBC token issues: ensure `az login` or Managed Identity; install `ODBC Driver 18 for SQL Server`.
 
-Located in `scripts/test_env/`:
+### Repository Pointers
+- `agentic_framework/mcps/sql/server.py` — SQL MCP (caller-provided SQL only)
+- `agentic_framework/shared/azure_sql_client.py` — Azure SQL access token wiring
+- `scripts/assets/functions/tools/` — tool schemas (exactly four)
+- `scripts/assets/schema/` — seed schema data
+- `scripts/test_env/upload_artifacts.py` — Cosmos sync helper
 
-- **`set_env.ps1`** - Merges `.env.example` into `.env`, optionally auto-discovers Azure endpoints from resource group
-  ```powershell
-  .\scripts\test_env\set_env.ps1 -ResourceGroup <your-rg>
-  ```
-- **`init_data.py`** - Initializes Cosmos DB containers and uploads prompts/functions from `scripts/assets/`
-  ```bash
-  python .\scripts\test_env\init_data.py
-  ```
+```toml
+[framework]
+dev_mode = false
+bypass_token = true
+debug = true
+environment = "development"
+app_name = "Text-to-SQL Agent"
 
-Typical workflow:
-```powershell
-# From repository root
-.\scripts\test_env\set_env.ps1 -ResourceGroup <your-rg>
-python .\scripts\test_env\init_data.py
+[azure.openai]
+endpoint = "https://<your-aoai>.openai.azure.com/"
+chat_deployment = "gpt-4o"
+embedding_deployment = "text-embedding-ada-002"
+api_version = "2024-06-01"
+
+[azure.cosmos]
+endpoint = "https://<your-cosmos>.documents.azure.com:443/"
+database = "appdb"
+
+[azure.fabric]
+sql_endpoint = "<workspace>.datawarehouse.fabric.microsoft.com"
+database = "<lakehouse>"
+token_scope = "https://analysis.windows.net/powerbi/api/.default"
+
+[azure.sql]
+enabled = true
+server = "<server>.database.windows.net"
+database = "<database>"
+authentication = "azure_ad"
+token_scope = "https://database.windows.net/.default"
+
+[rbac]
+enabled = true
+enforcement_mode = "soft"
+row_level_security = true
+
+[text_to_sql]
+enable_embeddings = true
+enable_table_discovery = true
+enable_value_matching = true
+similarity_threshold = 0.75
+max_tables_per_query = 5
+value_match_threshold = 0.80
+max_unique_values_for_low_cardinality = 50
+enable_self_healing = true
+max_retry_attempts = 3
+
+[mcp.endpoints]
+sql_mcp = "http://localhost:8003/mcp"
+graph_mcp = "http://localhost:8001/mcp"
+interpreter_mcp = "http://localhost:8002/mcp"
 ```
 
-## Cosmos DB Setup
-
-The framework expects these containers in `COSMOS_DATABASE_NAME`:
-
-- **mcp_definitions** (partition key: `/id`) - MCP server registrations (optional, discovery now uses HTTP endpoints)
-- **agent_functions** (partition key: `/mcp_id`) - Tool/function schemas
-- **prompts** (partition key: `/id`) - System prompts for agents
-- **rbac_config** (partition key: `/role_name`) - Role permissions
-- **unified_data** (partition key: `/session_id`) - Chat history/cache
-- **sql_schema** (partition key: `/id`) - SQL schema metadata
-
-### Sample Data Structure
-
-**Tool Definition** (`agent_functions` container):
-```json
-{
-  "id": "sql_query",
-  "mcp_id": "sql_mcp",
-  "name": "sql_query",
-  "description": "Execute SQL queries",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "query": {"type": "string"},
-      "accounts_mentioned": {"type": "array"}
-    }
-  },
-  "allowed_roles": ["sales_rep", "admin"]
-}
+### Setup
+1) **Authenticate**: `az login` (DefaultAzureCredential everywhere; prefer Managed Identity in prod).
+2) **Install** (Python 3.11+):
+```pwsh
+cd agentic_framework
+pip install -r requirements.txt
 ```
+3) **Configure**: Edit the single `config.toml` with your endpoints and toggles. No `.env` files.
 
-## Port Configuration
-
-**CRITICAL**: Each MCP server must use a unique port number. Ports are assigned sequentially starting from 8001, in alphabetical order by MCP folder name:
-
-- **Orchestrator**: Port 8000 (always)
-- **Graph MCP**: Port 8001 (alphabetically first)
-- **Interpreter MCP**: Port 8002 (alphabetically second)
-- **SQL MCP**: Port 8003 (alphabetically third)
-
-### How Port Assignment Works
-
-1. Each MCP server reads its port from the `MCP_PORT` environment variable
-2. The deployment script automatically assigns ports based on alphabetical folder order
-3. MCP servers **must** pass the port explicitly to `mcp.run()`:
-   ```python
-   mcp.run(transport=TRANSPORT, host=HOST, port=MCP_SERVER_PORT)
-   ```
-4. The port constant should read from environment:
-   ```python
-   MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8001"))  # Default for first MCP
-   ```
-
-**Important**: When adding new MCPs, they will automatically be assigned the next sequential port based on their alphabetical position.
-
-## Testing
-
-### Test Orchestrator
-```bash
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [{"role": "user", "content": "Show contacts at Microsoft"}],
-    "user_id": "test@example.com"
-  }'
+### Run
+- **Dev mode (no cloud calls)**: set `[framework].dev_mode = true`, `[framework].bypass_token = true` then run all services locally:
+```pwsh
+cd agentic_framework
+python -m mcps.graph.server       # 8001
+python -m mcps.interpreter.server # 8002
+python -m mcps.sql.server         # 8003
+python -m orchestrator.app        # 8000
 ```
+- **Production mode**: set `dev_mode = false`, `bypass_token = false`, ensure Cosmos containers exist, and start the same entrypoints (Container Apps/AKS recommended). Port assignments stay fixed.
 
-### List MCPs and Tools
-```bash
+### Key Features
+- Embedding-based table discovery for large schemas
+- Low-cardinality value normalization and fuzzy matching
+- Dual Fabric SQL and Azure SQL with correct token scopes
+- RBAC-aware SQL generation (row and column filtering)
+- Self-healing retries on SQL errors
+
+### Testing
+Run pytest from repository root:
+```pwsh
+python -m pytest tests
+```
+Expect real Azure endpoints unless `dev_mode` is true. Use Managed Identity or `az login` before running integration tests.
+
+### Troubleshooting
+- **Auth issues**: `az login`; verify managed identity roles (Cosmos DB Data Contributor/Reader, Fabric/Azure SQL data reader, Azure OpenAI user).
+- **Table not found**: confirm database names and schema metadata in `sql_schema`/`table_metadata` containers.
+- **Value not matching**: ensure `max_unique_values_for_low_cardinality` is not exceeded and value_mappings container is populated.
+- **RBAC blocks**: start with `[rbac].enforcement_mode = "soft"` to log violations without blocking.
+
+### Repository Layout (essentials)
+- `config.toml` — single config source (required)
+- `agentic_framework/orchestrator/` — orchestrator FastMCP app
+- `agentic_framework/mcps/` — SQL/Graph/Interpreter MCP servers
+- `agentic_framework/shared/` — shared clients (Azure OpenAI, Cosmos, Fabric/Azure SQL, RBAC, discovery)
+- `scripts/` — utilities, test data loaders
+- `deploy/` — infra and deployment helpers
+
+### Quick Validation Calls
+```pwsh
 curl http://localhost:8000/mcps
 curl http://localhost:8000/tools
+curl -X POST http://localhost:8000/chat -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"Show closed deals for Contoso"}],"user_id":"test@example.com"}'
 ```
 
-### Run Test Scripts
-```bash
-cd agentic_framework
-python tests/test_sql_mcp.py
-python tests/test_graph_mcp.py
-python tests/test_interpreter_mcp.py
-python tests/test_orchestrator.py
-python tests/test_orchestrator_multitool.py
-```
-
-## Adding New MCPs
-
-Adding a new MCP requires code changes, configuration updates, and optionally infrastructure changes for additional Azure services.
-
-### Step 1: Create MCP Server Code
-
-**1.1. Create MCP Directory and Server**
-
-Using the template in [mcps/TEMPLATE_MCP.py](agentic_framework/mcps/TEMPLATE_MCP.py):
-
-```bash
-# Create new MCP directory (name determines port assignment - alphabetical order)
-mkdir agentic_framework/mcps/custom
-cp agentic_framework/mcps/TEMPLATE_MCP.py agentic_framework/mcps/custom/server.py
-```
-
-**1.2. Implement MCP Logic**
-
-Edit `agentic_framework/mcps/custom/server.py`:
-
-```python
-from fastmcp import FastMCP
-from shared.auth_provider import create_auth_provider
-from shared.config import get_settings
-from shared.aoai_client import AzureOpenAIClient
-import os
-
-# Configuration
-MCP_SERVER_NAME = "Custom MCP Server"
-AGENT_TYPE = "custom"
-PROMPT_ID = "custom_agent_system"
-MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8004"))  # Adjust default based on alphabetical position
-
-settings = get_settings()
-auth_provider = create_auth_provider()
-mcp = FastMCP(MCP_SERVER_NAME, auth=auth_provider)
-
-# Global clients
-aoai_client = None
-
-async def initialize_clients():
-    global aoai_client
-    if aoai_client is None:
-        aoai_client = AzureOpenAIClient(settings.aoai)
-
-@mcp.tool()
-async def custom_tool(query: str, rbac_context: Optional[Dict] = None) -> Dict[str, Any]:
-    """
-    Execute custom operations.
-
-    Args:
-        query: Natural language query
-        rbac_context: RBAC context for filtering (injected by orchestrator)
-    """
-    await initialize_clients()
-
-    # Your custom logic here
-    # Use aoai_client, apply RBAC filtering, etc.
-
-    return {
-        "success": True,
-        "data": [],
-        "source": "custom_mcp"
-    }
-
-if __name__ == "__main__":
-    mcp.run(transport="http", host="0.0.0.0", port=MCP_SERVER_PORT)
-```
-
-**1.3. Create Dockerfile**
-
-Create `agentic_framework/mcps/custom/Dockerfile`:
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# Copy shared dependencies and MCP code
-COPY shared/ ./shared/
-COPY mcps/custom/ ./mcps/custom/
-COPY requirements.txt .
-
-# Install dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Run the MCP server
-CMD ["python", "-m", "mcps.custom.server"]
-```
-
-### Step 2: Create Tool Definitions
-
-**2.1. Create Tool Schema**
-
-Create `scripts/assets/functions/tools/custom_tool.json`:
-
-```json
-{
-  "id": "custom_tool",
-  "mcp_id": "custom_mcp",
-  "name": "custom_tool",
-  "description": "Execute custom operations based on natural language query",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "query": {
-        "type": "string",
-        "description": "Natural language description of the operation to perform"
-      }
-    },
-    "required": ["query"]
-  },
-  "allowed_roles": ["admin", "power_user"]
-}
-```
-
-**2.2. Create System Prompt (Optional)**
-
-Create `scripts/assets/prompts/custom_agent_system.md`:
-
-```markdown
-You are a custom operations agent that executes specialized tasks.
-
-Your capabilities:
-- Custom operation 1
-- Custom operation 2
-
-Always return structured data in the expected format.
-```
-
-### Step 3: Configure Infrastructure (If New Azure Services Needed)
-
-**3.1. Add Bicep Module (if needed)**
-
-If your MCP needs a new Azure service (e.g., Azure Storage, Key Vault):
-
-Create `deploy/infrastructure/modules/storage.bicep`:
-
-```bicep
-param name string
-param location string
-param tags object = {}
-
-resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
-  name: name
-  location: location
-  kind: 'StorageV2'
-  sku: {
-    name: 'Standard_LRS'
-  }
-  properties: {
-    accessTier: 'Hot'
-  }
-  tags: tags
-}
-
-output storageAccountId string = storageAccount.id
-output storageAccountName string = storageAccount.name
-```
-
-**3.2. Update Main Bicep Template**
-
-Edit `deploy/infrastructure/main.bicep`:
-
-```bicep
-// Add to variables section
-var storageAccountName = '${baseName}storage${uniqueSuffix}'
-
-// Add module import
-module storage 'modules/storage.bicep' = {
-  name: 'deploy-storage'
-  params: {
-    name: storageAccountName
-    location: location
-    tags: tags
-  }
-}
-
-// Add RBAC assignment
-resource storageRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storage.outputs.storageAccountId, identity.outputs.principalId, 'StorageBlobDataContributor')
-  scope: resourceGroup()
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
-    principalId: identity.outputs.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// Add to outputs section
-output storageAccountName string = storage.outputs.storageAccountName
+### Notes
+- All services use HTTP transport; ports remain 8000–8003.
+- Secrets should be injected via environment or Managed Identity, not checked into `config.toml`.
+- Cosmos vector search is used when available for table embeddings; otherwise the service falls back to in-memory similarity.
 ```
 
 **3.3. Update generate-env.ps1**

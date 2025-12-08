@@ -1,8 +1,8 @@
 """
 SQL MCP Server for Salesforce/Fabric SQL interactions.
 
-This MCP server provides SQL query capabilities with intelligent query
-generation using an internal LLM and RBAC-based row-level security.
+This MCP server executes caller-provided T-SQL with optional RBAC-aware context
+and cached schema/value metadata for better hints and validation.
 """
 
 import json
@@ -10,6 +10,7 @@ import asyncio
 from typing import Dict, Any, Optional, List
 from fastmcp import FastMCP
 import structlog
+from tenacity import RetryError
 
 import sys
 import os
@@ -23,6 +24,8 @@ from shared.aoai_client import AzureOpenAIClient
 from shared.fabric_client import FabricClient
 from shared.cosmos_client import CosmosDBClient
 from shared.account_resolver import AccountResolverService
+from shared.table_discovery_service import TableDiscoveryService
+from shared.value_matching_service import ValueMatchingService
 from shared.auth_provider import create_auth_provider
 
 # ============================================================================
@@ -30,11 +33,12 @@ from shared.auth_provider import create_auth_provider
 # ============================================================================
 MCP_SERVER_NAME = "SQL MCP Server"
 MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8003"))  # Server port (from env or default 8003)
-PROMPT_ID = "sql_agent_system"
+PROMPT_ID = "sql_agent_system"  # Legacy (no longer used for query generation)
 AGENT_TYPE = "sql"  # Used to match function patterns like sql_*_function
 SQL_SCHEMA_CONTAINER = "sql_schema"  # Container name for SQL schema metadata
 DEFAULT_QUERY_LIMIT = 100
 MAX_RETRY_ATTEMPTS = int(os.getenv("MCP_MAX_RETRIES", "3"))  # Self-healing retry attempts
+DEFAULT_SYSTEM_PROMPT = ""  # No internal LLM prompt; the caller must send valid T-SQL directly.
 
 # ============================================================================
 # MAGIC VARIABLES (centralized configuration)
@@ -59,21 +63,210 @@ aoai_client: Optional[AzureOpenAIClient] = None
 fabric_client: Optional[FabricClient] = None
 cosmos_client: Optional[CosmosDBClient] = None
 account_resolver: Optional[AccountResolverService] = None
+table_discovery_service: Optional[TableDiscoveryService] = None
+value_matching_service: Optional[ValueMatchingService] = None
 
 # Caches for prompts, schema, and tool definitions
 _sql_schema_cache: Optional[str] = None
+_sql_schema_items_cache: Optional[List[Dict[str, Any]]] = None
 _system_prompt_cache: Optional[str] = None
 _agent_tools_cache: Optional[List[Dict[str, Any]]] = None
+_table_metadata_cache: Optional[List[Dict[str, Any]]] = None
+_value_mappings_cache: Optional[List[Dict[str, Any]]] = None
+_schema_embeddings_cache: Optional[List[Dict[str, Any]]] = None
+_value_embeddings_cache: Optional[List[Dict[str, Any]]] = None
+
+
+async def _ensure_table_metadata_embeddings() -> None:
+    """Generate missing embeddings for table and column metadata and cache them."""
+    global _table_metadata_cache, _schema_embeddings_cache
+
+    if not settings.text_to_sql.enable_embeddings:
+        return
+
+    if aoai_client is None or cosmos_client is None:
+        await initialize_clients()
+
+    if not _table_metadata_cache:
+        return
+
+    updated_items: List[Dict[str, Any]] = []
+
+    for item in _table_metadata_cache:
+        needs_upsert = False
+        table_name = item.get("table_name", "")
+        schema_name = item.get("schema", "dbo")
+        description = item.get("description", "")
+
+        if not item.get("embedding"):
+            text = f"{schema_name}.{table_name}. {description}".strip()
+            item["embedding"] = await aoai_client.generate_embedding(text or table_name)
+            needs_upsert = True
+
+        for col in item.get("columns", []):
+            if not col.get("embedding"):
+                col_text = f"{col.get('name', '')}. {col.get('description', '')}".strip()
+                col["embedding"] = await aoai_client.generate_embedding(col_text or col.get("name", ""))
+                needs_upsert = True
+
+        if needs_upsert:
+            await cosmos_client.upsert_item(settings.cosmos.table_metadata_container, item)
+
+        updated_items.append({
+            "table_name": table_name,
+            "schema": schema_name,
+            "embedding": item.get("embedding"),
+            "columns": item.get("columns", []),
+        })
+
+    _schema_embeddings_cache = updated_items
+    logger.info(
+        "Schema embeddings ensured",
+        table_count=len(_schema_embeddings_cache or []),
+    )
+
+
+async def _ensure_value_embeddings() -> None:
+    """Generate missing embeddings for low-cardinality values and cache them."""
+    global _value_mappings_cache, _value_embeddings_cache
+
+    if not settings.text_to_sql.enable_embeddings:
+        return
+
+    if aoai_client is None or cosmos_client is None:
+        await initialize_clients()
+
+    if not _value_mappings_cache:
+        return
+
+    updated_items: List[Dict[str, Any]] = []
+
+    for item in _value_mappings_cache:
+        needs_upsert = False
+        for value_entry in item.get("values", []):
+            if not value_entry.get("embedding"):
+                value_text = value_entry.get("value", "")
+                value_entry["embedding"] = await aoai_client.generate_embedding(value_text)
+                needs_upsert = True
+
+        if needs_upsert:
+            await cosmos_client.upsert_item(settings.cosmos.value_mappings_container, item)
+
+        updated_items.append(item)
+
+    _value_embeddings_cache = updated_items
+    logger.info(
+        "Value embeddings ensured",
+        mapping_count=len(_value_embeddings_cache or []),
+    )
+
+
+async def ensure_embedding_caches() -> None:
+    """Ensure embedding caches are populated for tables and value catalogs."""
+    try:
+        await _ensure_table_metadata_embeddings()
+    except Exception as e:
+        logger.warning("Table embedding preload failed", error=str(e))
+
+    try:
+        await _ensure_value_embeddings()
+    except Exception as e:
+        logger.warning("Value embedding preload failed", error=str(e))
+
+
+def _builtin_tool_definitions() -> List[Dict[str, Any]]:
+    """Fallback tool definitions when Cosmos metadata is unavailable."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "sql_query",
+                "description": "Execute a provided T-SQL query against Azure SQL. Caller MUST supply valid T-SQL (use TOP instead of LIMIT; bracket reserved identifiers like [Case]).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "T-SQL statement to execute (SELECT-only).",
+                        },
+                        "value_mappings": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "table": {"type": "string"},
+                                    "column": {"type": "string"},
+                                    "user_value": {"type": "string"},
+                                    "matched_value": {"type": "string"},
+                                },
+                                "required": ["table", "column", "user_value", "matched_value"],
+                            },
+                            "description": "Optional array of value mappings for low-cardinality columns. Each mapping resolves a user-provided value to its exact database value.",
+                        },
+                        "accounts_mentioned": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional account names referenced in the request (metadata only).",
+                        },
+                        "rbac_context": {
+                            "type": "object",
+                            "description": "Optional RBAC context (e.g., user email).",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Optional row cap; if provided and query lacks TOP, enforce using TOP <limit>.",
+                            "default": DEFAULT_QUERY_LIMIT,
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_tables",
+                "description": "List available tables from cached schema metadata.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_columns",
+                "description": "List columns for a given table name using schema metadata.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "table": {
+                            "type": "string",
+                            "description": "Table name to describe.",
+                        }
+                    },
+                    "required": ["table"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_schema",
+                "description": "Return full schema text plus table/column map.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    ]
 
 
 async def initialize_clients():
     """Initialize all required clients."""
     global aoai_client, fabric_client, cosmos_client, account_resolver
+    global table_discovery_service, value_matching_service
     
     if aoai_client is None:
         aoai_client = AzureOpenAIClient(settings.aoai)
     if fabric_client is None:
-        fabric_client = FabricClient(settings.fabric)
+        fabric_client = FabricClient(settings.fabric, sql_settings=settings.azure_sql)
     if cosmos_client is None:
         cosmos_client = CosmosDBClient(settings.cosmos)
     if account_resolver is None:
@@ -81,13 +274,18 @@ async def initialize_clients():
             fabric_client=fabric_client,
             dev_mode=settings.dev_mode
         )
+    if table_discovery_service is None:
+        table_discovery_service = TableDiscoveryService(cosmos_client, aoai_client)
+    if value_matching_service is None:
+        value_matching_service = ValueMatchingService(cosmos_client, aoai_client)
     
     logger.info("SQL MCP Server clients initialized")
+    await preload_metadata()
 
 
 async def get_sql_schema() -> str:
     """Load SQL schema from Cosmos DB."""
-    global _sql_schema_cache
+    global _sql_schema_cache, _sql_schema_items_cache
 
     # Return cached schema if available
     if _sql_schema_cache is not None:
@@ -103,6 +301,9 @@ async def get_sql_schema() -> str:
             container_name=SQL_SCHEMA_CONTAINER,
             query="SELECT * FROM c",
         )
+
+        # Cache raw items for other tools
+        _sql_schema_items_cache = items
 
         if not items:
             return "No schema available"
@@ -124,6 +325,74 @@ async def get_sql_schema() -> str:
         return "Schema unavailable"
 
 
+async def preload_metadata():
+    """Preload schema and related metadata into memory on startup."""
+    global _table_metadata_cache, _value_mappings_cache
+
+    try:
+        await get_sql_schema()
+    except Exception as e:
+        logger.warning("Schema preload failed", error=str(e))
+
+    # Preload table metadata (if available)
+    try:
+        if cosmos_client is None:
+            await initialize_clients()
+        _table_metadata_cache = await cosmos_client.query_items(
+            container_name=settings.cosmos.table_metadata_container,
+            query="SELECT * FROM c",
+        )
+        logger.info(
+            "Loaded table metadata",
+            item_count=len(_table_metadata_cache or []),
+            container=settings.cosmos.table_metadata_container,
+        )
+    except Exception as e:
+        logger.warning(
+            "Table metadata preload failed",
+            error=str(e),
+            container=getattr(settings.cosmos, "table_metadata_container", "table_metadata"),
+        )
+
+    # Preload low-cardinality value mappings (if available)
+    try:
+        if cosmos_client is None:
+            await initialize_clients()
+        _value_mappings_cache = await cosmos_client.query_items(
+            container_name=settings.cosmos.value_mappings_container,
+            query="SELECT * FROM c",
+        )
+        logger.info(
+            "Loaded value mappings",
+            item_count=len(_value_mappings_cache or []),
+            container=settings.cosmos.value_mappings_container,
+        )
+    except Exception as e:
+        logger.warning(
+            "Value mappings preload failed",
+            error=str(e),
+            container=getattr(settings.cosmos, "value_mappings_container", "value_mappings"),
+        )
+
+    # Ensure embeddings are present for table metadata and value catalogs
+    try:
+        await ensure_embedding_caches()
+    except Exception as e:
+        logger.warning("Embedding cache warmup failed", error=str(e))
+
+
+async def get_schema_items() -> List[Dict[str, Any]]:
+    """Return schema items as a list of dicts with table_name and columns."""
+    global _sql_schema_items_cache
+
+    if _sql_schema_items_cache is not None:
+        return _sql_schema_items_cache
+
+    # Populate via get_sql_schema (which will set the cache)
+    await get_sql_schema()
+    return _sql_schema_items_cache or []
+
+
 async def get_system_prompt(rbac_context: Optional[Dict[str, Any]] = None) -> str:
     """Get SQL agent system prompt with schema from Cosmos DB.
 
@@ -132,28 +401,38 @@ async def get_system_prompt(rbac_context: Optional[Dict[str, Any]] = None) -> st
     """
     global _system_prompt_cache
 
-    # Load base prompt from cache or Cosmos
+    # Load base prompt from cache or Cosmos with a safe default fallback
     if _system_prompt_cache is None:
+        base_prompt = DEFAULT_SYSTEM_PROMPT
+
         if cosmos_client is None:
             await initialize_clients()
 
-        logger.info("Loading system prompt from Cosmos (cache miss)", prompt_id=PROMPT_ID)
-        prompt_items = await cosmos_client.query_items(
-            container_name=settings.cosmos.prompts_container,
-            query="SELECT * FROM c WHERE c.id = @prompt_id",
-            parameters=[{"name": "@prompt_id", "value": PROMPT_ID}],
-        )
+        try:
+            logger.info("Loading system prompt from Cosmos (cache miss)", prompt_id=PROMPT_ID)
+            prompt_items = await cosmos_client.query_items(
+                container_name=settings.cosmos.prompts_container,
+                query="SELECT * FROM c WHERE c.id = @prompt_id",
+                parameters=[{"name": "@prompt_id", "value": PROMPT_ID}],
+            )
 
-        if not prompt_items:
-            raise Exception(f"Prompt '{PROMPT_ID}' not found in Cosmos DB container '{settings.cosmos.prompts_container}'")
+            if prompt_items:
+                candidate = prompt_items[0].get("content", "")
+                if candidate:
+                    base_prompt = candidate
+                    logger.info("System prompt loaded and cached", prompt_id=PROMPT_ID)
+                else:
+                    logger.warning("Prompt content empty, using default prompt", prompt_id=PROMPT_ID)
+            else:
+                logger.warning(
+                    "Prompt not found in Cosmos, using default prompt",
+                    prompt_id=PROMPT_ID,
+                    container=settings.cosmos.prompts_container,
+                )
+        except Exception as e:
+            logger.warning("Falling back to default system prompt", error=str(e))
 
-        base_prompt = prompt_items[0].get("content", "")
-        if not base_prompt:
-            raise Exception(f"Prompt '{PROMPT_ID}' has empty content")
-
-        # Cache the base prompt
         _system_prompt_cache = base_prompt
-        logger.info("System prompt loaded and cached", prompt_id=PROMPT_ID)
     else:
         logger.debug("Using cached system prompt")
 
@@ -189,33 +468,48 @@ async def load_agent_tools() -> List[Dict[str, Any]]:
     if cosmos_client is None:
         await initialize_clients()
 
+    tools: List[Dict[str, Any]] = []
+
     logger.info("Loading agent tools from Cosmos (cache miss)", agent_type=AGENT_TYPE)
-    # Load all tool definitions for this agent type from Cosmos DB
-    # Pattern: {agent_type}_*_function (e.g., sql_query_function, sql_analysis_function)
-    tool_items = await cosmos_client.query_items(
-        container_name=settings.cosmos.agent_functions_container,
-        query=f"SELECT * FROM c WHERE STARTSWITH(c.id, @prefix) AND ENDSWITH(c.id, '_function')",
-        parameters=[{"name": "@prefix", "value": f"{AGENT_TYPE}_"}],
-    )
+    try:
+        tool_items = await cosmos_client.query_items(
+            container_name=settings.cosmos.agent_functions_container,
+            query=f"SELECT * FROM c WHERE STARTSWITH(c.id, @prefix) AND ENDSWITH(c.id, '_function')",
+            parameters=[{"name": "@prefix", "value": f"{AGENT_TYPE}_"}],
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to load tools from Cosmos, using built-in defaults",
+            error=str(e),
+            container=settings.cosmos.agent_functions_container,
+        )
+        tools = _builtin_tool_definitions()
+        _agent_tools_cache = tools
+        return tools
 
     if not tool_items:
-        raise Exception(f"No tool definitions found for agent type '{AGENT_TYPE}' in Cosmos DB")
+        logger.warning(
+            "No tool definitions found in Cosmos, using built-in defaults",
+            agent_type=AGENT_TYPE,
+            container=settings.cosmos.agent_functions_container,
+        )
+        tools = _builtin_tool_definitions()
+    else:
+        for tool_def in tool_items:
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool_def.get("name"),
+                    "description": tool_def.get("description"),
+                    "parameters": tool_def.get("parameters"),
+                }
+            })
 
-    tools = []
-    for tool_def in tool_items:
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": tool_def.get("name"),
-                "description": tool_def.get("description"),
-                "parameters": tool_def.get("parameters"),
-            }
-        })
-
-    # Cache the tools
     _agent_tools_cache = tools
-    logger.info(f"Loaded and cached {len(tools)} tool(s) for agent type '{AGENT_TYPE}'",
-               tool_names=[t["function"]["name"] for t in tools])
+    logger.info(
+        f"Loaded and cached {len(tools)} tool(s) for agent type '{AGENT_TYPE}'",
+        tool_names=[t["function"]["name"] for t in tools],
+    )
 
     return tools
 
@@ -264,7 +558,7 @@ async def retry_with_llm_feedback(
     Returns:
         Corrected SQL query or None if LLM couldn't fix it
     """
-    logger.info("🔧 SELF-HEALING RETRY", attempt=attempt, error_preview=error_message[:100])
+    logger.info("SELF-HEALING RETRY", attempt=attempt, error_preview=error_message[:100])
     
     feedback_message = f"""The previous SQL query failed with this error:
 
@@ -309,7 +603,7 @@ Please analyze the error and generate a CORRECTED SQL query that fixes the issue
         args = json.loads(function_call.get("arguments", "{}"))
         corrected_sql = args.get("query", "")
         
-        logger.info("✅ LLM generated corrected SQL", query_preview=corrected_sql[:100])
+        logger.info("LLM generated corrected SQL", query_preview=corrected_sql[:100])
         return corrected_sql
         
     except Exception as e:
@@ -317,27 +611,77 @@ Please analyze the error and generate a CORRECTED SQL query that fixes the issue
         return None
 
 
+async def _build_table_hints(user_query: str) -> List[str]:
+    """Return a concise list of relevant tables using embeddings (with fallback to cached metadata)."""
+    if not settings.text_to_sql.enable_table_discovery:
+        return []
+
+    hints: List[str] = []
+
+    try:
+        if table_discovery_service is None:
+            await initialize_clients()
+
+        tables = await table_discovery_service.discover_tables(
+            user_query,
+            max_tables=settings.text_to_sql.max_tables_per_query,
+        )
+
+        for table in tables:
+            col_names = [col.name for col in (table.columns or [])][:8]
+            hints.append(f"{table.schema}.{table.table_name} (cols: {', '.join(col_names)})")
+
+        if hints:
+            return hints
+    except Exception as e:
+        logger.warning("Table discovery failed, falling back to cached metadata", error=str(e))
+
+    # Fallback: use cached metadata when discovery fails or returns nothing
+    if _table_metadata_cache:
+        for item in _table_metadata_cache[: settings.text_to_sql.max_tables_per_query]:
+            cols = [col.get("name", "") for col in item.get("columns", [])][:8]
+            hints.append(f"{item.get('schema', 'dbo')}.{item.get('table_name', 'unknown')} (cols: {', '.join(cols)})")
+
+    return hints
+
+
+def _build_value_hints(max_items: int = 5, max_values: int = 6) -> List[str]:
+    """Return low-cardinality value hints to keep the LLM on canonical values."""
+    if not settings.text_to_sql.enable_value_matching:
+        return []
+
+    hints: List[str] = []
+    for item in (_value_mappings_cache or [])[:max_items]:
+        values = [val.get("value", "") for val in item.get("values", [])][:max_values]
+        if not values:
+            continue
+        hints.append(f"{item.get('table')}.{item.get('column')}: {', '.join(values)}")
+
+    return hints
+
+
 @mcp.tool()
 async def sql_query(
     query: str,
+    value_mappings: Optional[List[Dict[str, str]]] = None,
     accounts_mentioned: Optional[List[str]] = None,
     rbac_context: Optional[Dict[str, Any]] = None,
     limit: int = DEFAULT_QUERY_LIMIT,
     request: Optional[Any] = None
 ) -> Dict[str, Any]:
     """
-    Execute SQL queries against Salesforce/Fabric data.
-    
-    This tool uses an internal LLM to generate SQL from natural language,
-    resolves account mentions, and enforces RBAC row-level security.
-    
+    Execute caller-provided T-SQL against Azure SQL.
+
     Args:
-        query: Natural language query description
+        query: T-SQL statement (SELECT-only). Use TOP instead of LIMIT. Bracket reserved identifiers.
+        value_mappings: Optional list of value mappings for low-cardinality columns.
+                       Each mapping contains: table, column, user_value, matched_value.
+                       The server will replace user_value with matched_value in the query.
         accounts_mentioned: List of account names mentioned in query
         rbac_context: User RBAC context for row-level security
         limit: Maximum number of rows to return
         request: FastAPI Request object (injected by FastMCP)
-    
+
     Returns:
         Dictionary with query results, including success status, data, and metadata
     """
@@ -363,141 +707,156 @@ async def sql_query(
     try:
         await initialize_clients()
 
-        logger.info("📊 SQL TOOL START", query=query[:100], accounts_mentioned=accounts_mentioned)
+        logger.info("SQL TOOL START", query=query[:200], accounts_mentioned=accounts_mentioned, value_mappings=value_mappings)
 
-        resolved_accounts = []
-        if accounts_mentioned:
-            logger.info("🔍 Resolving account names", count=len(accounts_mentioned))
-            resolve_start = time.time()
-            resolved_accounts = await resolve_accounts(accounts_mentioned)
-            resolve_elapsed = int((time.time() - resolve_start) * 1000)
-            logger.info("✅ Accounts resolved", count=len(resolved_accounts), duration_ms=resolve_elapsed)
-        
-        system_prompt = await get_system_prompt(rbac_context)
-        
-        user_message = f"Generate a SQL query for: {query}"
-        if resolved_accounts:
-            account_names = [acc["name"] for acc in resolved_accounts]
-            user_message += f"\n\nAccount context: {', '.join(account_names)}"
-        user_message += f"\n\nLimit results to {limit} rows."
-        
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ]
-        
-        # Load tool definitions for this agent
-        tools = await load_agent_tools()
-        
-        logger.debug("LLM request",
-                    messages=json.dumps(messages, indent=2),
-                    tools=json.dumps(tools, indent=2))
-        
-        response = await aoai_client.create_chat_completion(
-            messages=messages,
-            tools=tools,
-            tool_choice="required"
-        )
-        
-        logger.debug("LLM raw response", response=json.dumps(response, indent=2, default=str))
-        
-        # Extract function/tool call from response
-        assistant_message = response["choices"][0]["message"]
-        
-        # Check for tool_calls (new style) or function_call (legacy)
-        function_call = None
-        if assistant_message.get("tool_calls"):
-            tool_call = assistant_message["tool_calls"][0]
-            function_call = tool_call.get("function")
-            logger.info("Found tool_call in response", function_name=function_call.get("name"))
-        elif assistant_message.get("function_call"):
-            function_call = assistant_message["function_call"]
-            logger.info("Found function_call in response", function_name=function_call.get("name"))
-        else:
-            logger.error("NO FUNCTION CALL FOUND IN RESPONSE!", 
-                        message_keys=list(assistant_message.keys()),
-                        content_preview=str(assistant_message.get("content", ""))[:200])
-            raise Exception("LLM did not return a function call - check system prompt configuration")
-        
-        # Parse the function arguments to get the SQL query
-        args_str = function_call.get("arguments", "{}")
-        args = json.loads(args_str)
-        sql_query = args.get("query", "")
-        
-        logger.info("Extracted SQL query", query_preview=sql_query[:100])
+        # Basic safety: only allow SELECT queries
+        if not query.strip().lower().startswith("select"):
+            return {
+                "success": False,
+                "error": "Only SELECT statements are allowed",
+                "query": query,
+            }
 
-        # Self-healing retry loop: Execute SQL with automatic error correction
+        # Apply value mappings if provided
+        sql_to_run = query
+        if value_mappings:
+            logger.info("Applying value mappings", mapping_count=len(value_mappings))
+            for mapping in value_mappings:
+                user_val = mapping.get("user_value", "")
+                matched_val = mapping.get("matched_value", "")
+                table = mapping.get("table", "")
+                column = mapping.get("column", "")
+
+                if user_val and matched_val:
+                    # Replace user value with matched value in the query
+                    # Try both quoted and unquoted variants
+                    replacements = [
+                        (f"'{user_val}'", f"'{matched_val}'"),
+                        (f'"{user_val}"', f'"{matched_val}"'),
+                        (user_val, matched_val),
+                    ]
+
+                    for old, new in replacements:
+                        if old in sql_to_run:
+                            sql_to_run = sql_to_run.replace(old, new)
+                            logger.info(
+                                "Applied value mapping",
+                                table=table,
+                                column=column,
+                                user_value=user_val,
+                                matched_value=matched_val,
+                            )
+                            break
+
+        # Enforce TOP if user provided a limit and no TOP is present
+        if limit and " top " not in sql_to_run.lower() and "top(" not in sql_to_run.lower():
+            # naive inject after SELECT
+            sql_to_run = sql_to_run.replace("SELECT", f"SELECT TOP {int(limit)}", 1)
+
         results = None
         last_error = None
-        
+
         for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
             try:
-                if settings.dev_mode:
-                    results = _get_dummy_sql_data(sql_query, limit)
-                    logger.info("Dev mode: using dummy SQL data", result_count=len(results))
-                else:
-                    logger.info("🗃️ EXECUTING SQL QUERY", query=sql_query[:200], attempt=attempt)
-                    sql_start = time.time()
-                    results = await fabric_client.execute_query(sql_query)
-                    sql_elapsed = int((time.time() - sql_start) * 1000)
-                    logger.info("✅ SQL QUERY COMPLETE", duration_ms=sql_elapsed, row_count=len(results), attempt=attempt)
-                
-                # Success! Break out of retry loop
+                logger.info("EXECUTING SQL QUERY", query=sql_to_run[:200], attempt=attempt)
+                sql_start = time.time()
+                results = await fabric_client.execute_query(sql_to_run)
+                sql_elapsed = int((time.time() - sql_start) * 1000)
+                logger.info("SQL QUERY COMPLETE", duration_ms=sql_elapsed, row_count=len(results), attempt=attempt)
                 break
-                
             except Exception as sql_error:
                 last_error = str(sql_error)
-                logger.warning(f"❌ SQL execution failed", 
-                             attempt=attempt, 
-                             max_attempts=MAX_RETRY_ATTEMPTS,
-                             error=last_error[:200])
-                
-                # If this was the last attempt, raise the error
-                if attempt >= MAX_RETRY_ATTEMPTS:
-                    logger.error("🚨 All retry attempts exhausted", attempts=attempt)
-                    raise
-                
-                # Ask LLM to fix the query based on the error
-                corrected_sql = await retry_with_llm_feedback(
-                    original_query=query,
-                    error_message=last_error,
+                logger.warning(
+                    "SQL execution failed",
                     attempt=attempt,
-                    system_prompt=system_prompt,
-                    tools=tools,
-                    previous_sql=sql_query
+                    max_attempts=MAX_RETRY_ATTEMPTS,
+                    error=last_error[:200],
                 )
-                
-                if corrected_sql:
-                    sql_query = corrected_sql
-                    logger.info("🔄 Retrying with corrected SQL", attempt=attempt + 1)
-                else:
-                    logger.error("LLM couldn't generate a correction, giving up")
-                    raise Exception(f"SQL execution failed and LLM couldn't correct it: {last_error}")
-        
-        # If we got here without results, something went wrong
+                if attempt >= MAX_RETRY_ATTEMPTS:
+                    raise
+
         if results is None:
             raise Exception(f"SQL execution failed after {MAX_RETRY_ATTEMPTS} attempts: {last_error}")
 
         total_elapsed = int((time.time() - start_time) * 1000)
-        logger.info("✅ SQL TOOL COMPLETE", row_count=len(results), total_duration_ms=total_elapsed)
+        logger.info("SQL TOOL COMPLETE", row_count=len(results), total_duration_ms=total_elapsed)
 
         return {
             "success": True,
-            "query": sql_query,
+            "query": sql_to_run,
             "row_count": len(results),
             "data": results,
             "source": "fabric_sql" if not settings.dev_mode else "dummy_sql",
-            "resolved_accounts": resolved_accounts,
+            "accounts_mentioned": accounts_mentioned,
         }
 
+    except RetryError as e:
+        total_elapsed = int((time.time() - start_time) * 1000)
+        root_err = str(getattr(e.last_attempt, "exception", lambda: e)()) if getattr(e, "last_attempt", None) else str(e)
+        logger.error("SQL TOOL FAILED (retry)", error=root_err, total_duration_ms=total_elapsed)
+        return {
+            "success": False,
+            "error": root_err,
+            "query": query,
+        }
     except Exception as e:
         total_elapsed = int((time.time() - start_time) * 1000)
-        logger.error("❌ SQL TOOL FAILED", error=str(e), total_duration_ms=total_elapsed)
+        logger.error("SQL TOOL FAILED", error=str(e), total_duration_ms=total_elapsed)
         return {
             "success": False,
             "error": str(e),
             "query": query,
         }
+
+
+@mcp.tool()
+async def list_tables() -> Dict[str, Any]:
+    """List available tables from cached schema metadata."""
+    try:
+        await initialize_clients()
+        items = await get_schema_items()
+        tables = [item.get("table_name", "unknown") for item in items]
+        return {"success": True, "tables": tables}
+    except Exception as e:
+        logger.error("Failed to list tables", error=str(e))
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool()
+async def list_columns(table: str) -> Dict[str, Any]:
+    """List columns for a given table name using schema metadata."""
+    try:
+        await initialize_clients()
+        items = await get_schema_items()
+        for item in items:
+            if item.get("table_name") == table:
+                return {
+                    "success": True,
+                    "table": table,
+                    "columns": item.get("columns", []),
+                }
+        return {"success": False, "error": f"Table '{table}' not found"}
+    except Exception as e:
+        logger.error("Failed to list columns", table=table, error=str(e))
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool()
+async def get_schema() -> Dict[str, Any]:
+    """Return full schema as text plus table/column map."""
+    try:
+        await initialize_clients()
+        schema_text = await get_sql_schema()
+        items = await get_schema_items()
+        table_map = {item.get("table_name", "unknown"): item.get("columns", []) for item in items}
+        return {
+            "success": True,
+            "schema": schema_text,
+            "tables": table_map,
+        }
+    except Exception as e:
+        logger.error("Failed to get schema", error=str(e))
+        return {"success": False, "error": str(e)}
 
 
 def _get_dummy_sql_data(query: str, limit: int = 100) -> List[Dict[str, Any]]:

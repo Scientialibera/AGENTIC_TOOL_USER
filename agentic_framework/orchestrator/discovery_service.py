@@ -19,6 +19,7 @@ NO CODE CHANGES NEEDED!
 from typing import List, Dict, Any, Optional
 import structlog
 import httpx
+from fastmcp import Client
 
 from shared.config import get_settings
 from shared.models import MCPDefinition, ToolDefinition, RBACContext, RBACConfig
@@ -129,44 +130,21 @@ class MCPDiscoveryService:
             return None
     
     async def _fetch_tools_from_mcp(self, mcp_name: str, endpoint: str) -> List[Dict[str, Any]]:
-        """
-        Fetch tools from an MCP server's /tools endpoint.
-
-        Args:
-            mcp_name: Name of the MCP
-            endpoint: Base endpoint URL (e.g., https://sql-mcp.../mcp)
-
-        Returns:
-            List of tool definitions
-        """
+        """Fetch tools using FastMCP client against the MCP endpoint."""
         try:
-            # Construct tools endpoint URL
-            tools_url = f"{endpoint}/tools"
-            logger.info("Fetching tools from MCP", mcp_name=mcp_name, tools_url=tools_url)
-            
-            response = await self.http_client.get(tools_url)
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                # Handle different response formats
-                if isinstance(data, dict) and 'tools' in data:
-                    tools = data['tools']
-                elif isinstance(data, list):
-                    tools = data
-                else:
-                    logger.warning("Unexpected tools response format", mcp_name=mcp_name, data_type=type(data).__name__)
-                    return []
-                
+            async with Client(endpoint) as client:
+                tool_objs = await client.list_tools()
+                tools = []
+                for tool in tool_objs:
+                    tools.append({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.inputSchema,
+                    })
+
                 logger.info("Fetched tools from MCP", mcp_name=mcp_name, tool_count=len(tools))
                 return tools
-            else:
-                logger.error("Failed to fetch tools from MCP", 
-                           mcp_name=mcp_name, 
-                           status_code=response.status_code,
-                           response=response.text[:200])
-                return []
-                
+
         except Exception as e:
             logger.error("Error fetching tools from MCP", mcp_name=mcp_name, error=str(e))
             return []
@@ -240,18 +218,29 @@ class MCPDiscoveryService:
             logger.error("Failed to load RBAC configs", error=str(e))
             return []
     
-    async def get_all_available_tools(self) -> List[Dict[str, Any]]:
+    async def get_all_available_tools(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
         """
         Get all available tools from all configured MCP servers.
+
+        Args:
+            force_refresh: When True, ignore the cached list and reload from MCP servers.
 
         Returns:
             List of tool definitions with their MCP source
         """
         try:
             # Return cached tools if available
-            if self._tools_cache is not None:
+            if self._tools_cache is not None and not force_refresh:
                 logger.debug("Returning cached tools", count=len(self._tools_cache))
                 return self._tools_cache
+
+            if force_refresh:
+                logger.info(
+                    "Force refreshing tool cache from MCP servers",
+                    cached_count=len(self._tools_cache or []),
+                )
+                self._tools_cache = None
+                self._tool_to_mcp_map = {}
 
             from fastmcp import Client
 
@@ -290,7 +279,11 @@ class MCPDiscoveryService:
 
             # Cache the results
             self._tools_cache = all_tools
-            logger.info("All tools loaded and cached", total_count=len(all_tools))
+            logger.info(
+                "All tools loaded and cached",
+                total_count=len(all_tools),
+                tool_map=self._tool_to_mcp_map,
+            )
             return all_tools
 
         except Exception as e:

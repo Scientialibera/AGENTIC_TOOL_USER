@@ -3,7 +3,8 @@ Scripts for local development and deploying artifacts to Cosmos DB.
 Files:
 - test_env/set_env.ps1: Writes a .env file with sensible defaults for development.
 - test_env/start_server.ps1: Starts the FastAPI app with uvicorn and writes logs to server.log.
-- test_env/upload_artifacts.py: Python script that uploads prompts and function definitions from scripts/assets to Cosmos DB. It deletes existing items before reuploading.
+- test_env/upload_artifacts.py: Upload prompts, agent/function definitions, and schema files from scripts/assets to Cosmos DB (AAD auth).
+- test_env/mcp_schema_test.py / mcp_test.py: Manual smoke tests against the running SQL MCP server.
 - infra/deploy.ps1: Deployment script for infrastructure.
 
 Usage:
@@ -11,7 +12,7 @@ Usage:
    Powershell: .\scripts\test_env\set_env.ps1
 2. Start the server:
    Powershell: .\scripts\test_env\start_server.ps1
-3. Upload prompts and functions:
+3. Upload prompts/functions/schema:
    python .\scripts\test_env\upload_artifacts.py
 
 Notes:

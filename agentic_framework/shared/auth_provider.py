@@ -54,8 +54,8 @@ except ImportError:
     logger.warning("FastAPI/PyJWT not available - orchestrator authentication will be disabled")
 
 
-# FastAPI security scheme
-security = HTTPBearer() if FASTAPI_AVAILABLE else None
+# FastAPI security scheme (auto_error=False lets us honor BYPASS_TOKEN without pre-raising)
+security = HTTPBearer(auto_error=False) if FASTAPI_AVAILABLE else None
 
 def create_auth_provider():
     """

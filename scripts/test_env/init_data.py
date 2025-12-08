@@ -343,7 +343,7 @@ class DataInitializer:
                 
                 # Upload to prompts container
                 await self.cosmos_client.upsert_item(
-                    container_name=settings.cosmos_db.prompts_container,
+                    container_name=settings.cosmos.prompts_container,
                     item=prompt_data
                 )
                 
@@ -373,7 +373,7 @@ class DataInitializer:
                 
                 # Upload to agent_functions container
                 await self.cosmos_client.upsert_item(
-                    container_name=settings.cosmos_db.agent_functions_container,
+                    container_name=settings.cosmos.agent_functions_container,
                     item=function_data
                 )
                 

@@ -13,7 +13,7 @@ from fastmcp import Client
 async def test_sql_query_natural_language():
     """Test SQL query with natural language."""
     
-    async with Client("http://localhost:8001/mcp") as client:
+    async with Client("http://localhost:8003/mcp") as client:
         print(" Connected to SQL MCP Server")
         
         # List available tools
