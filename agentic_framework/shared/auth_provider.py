@@ -82,49 +82,101 @@ async def verify_token_from_request(request) -> dict:
     """
     Verify JWT token from FastAPI/FastMCP request object.
     Call this at the start of MCP endpoint functions.
-    
+
     Args:
         request: FastAPI Request object
-        
+
     Returns:
         dict: Token payload if valid
-        
+
     Raises:
-        HTTPException: If token is invalid or missing
+        HTTPException: If token is invalid, missing, or lacks required role
     """
     settings = get_settings()
-    
+
     # If token bypass enabled, skip authentication
     if settings.bypass_token:
         logger.info("BYPASS_TOKEN enabled - skipping request token verification")
         return {"sub": "bypass-user", "bypass_token": True}
-    
+
     # Extract token from Authorization header
     auth_header = request.headers.get("Authorization", "")
-    
+
     if not auth_header.startswith("Bearer "):
         logger.warning("Missing or invalid Authorization header")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid Authorization header"
         )
-    
+
     token = auth_header[7:]  # Remove "Bearer " prefix
-    
+
     # Create credentials object
     credentials = HTTPAuthorizationCredentials(
         scheme="Bearer",
         credentials=token
     )
-    
+
     # Use our SSL-fixed verify_token function
     try:
         payload = await verify_token(credentials)
         logger.debug("Token verified from request", sub=payload.get('sub'))
+
+        # Check role if enabled
+        if settings.rbac.check_role:
+            await check_user_role(payload, settings.rbac.required_role)
+
         return payload
     except Exception as e:
         logger.error("Request token verification failed", error=str(e))
         raise
+
+
+async def check_user_role(payload: dict, required_role: str) -> None:
+    """
+    Check if user has required role in JWT token.
+
+    Args:
+        payload: Decoded JWT token payload
+        required_role: Required role (e.g., 'mcp:READ', 'mcp:WRITE')
+
+    Raises:
+        HTTPException: If role check fails and enforcement_mode is 'hard'
+    """
+    settings = get_settings()
+
+    if not settings.rbac.check_role:
+        logger.debug("Role checking disabled - allowing access")
+        return
+
+    # Extract roles from token (supports both 'roles' and 'role' claims)
+    roles = payload.get('roles', payload.get('role', []))
+
+    # Handle single role as string
+    if isinstance(roles, str):
+        roles = [roles]
+
+    # Check if required role is present
+    if required_role in roles:
+        logger.info("Role check passed", required_role=required_role, user_roles=roles, user=payload.get('sub'))
+        return
+
+    # Role not found
+    logger.warning("Role check failed",
+                  required_role=required_role,
+                  user_roles=roles,
+                  user=payload.get('sub'),
+                  enforcement_mode=settings.rbac.enforcement_mode)
+
+    # Hard enforcement - block access
+    if settings.rbac.enforcement_mode == 'hard':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied: Missing required role '{required_role}'"
+        )
+
+    # Soft enforcement - log but allow
+    logger.info("Soft enforcement - allowing access despite missing role")
 
 
 async def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Security(security)) -> dict:
