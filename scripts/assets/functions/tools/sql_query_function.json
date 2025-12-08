@@ -3,40 +3,17 @@
   "agent_type": "sql",
   "function_name": "sql_query",
   "name": "sql_query",
-  "description": "Execute a caller-provided SELECT T-SQL statement against Azure SQL. Use TOP instead of LIMIT and bracket reserved identifiers (e.g., [Case]). No SQL generation is performed.",
+  "description": "Execute a T-SQL SELECT query against Azure SQL. The MCP automatically handles value matching for low-cardinality columns (status, category, etc.) so you can use lowercase/mixed case values - they will be corrected to match exact database values. Use TOP instead of LIMIT. Bracket reserved identifiers (e.g., [Case]).",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "T-SQL statement to execute (SELECT-only)."
-      },
-      "value_mappings": {
-        "type": "array",
-        "items": {
-          "type": "object",
-          "properties": {
-            "table": {"type": "string"},
-            "column": {"type": "string"},
-            "user_value": {"type": "string"},
-            "matched_value": {"type": "string"}
-          },
-          "required": ["table", "column", "user_value", "matched_value"]
-        },
-        "description": "Optional array of value mappings for low-cardinality columns. Each mapping resolves a user-provided value to its exact database value. The MCP server will automatically replace user_value with matched_value in the query before execution."
-      },
-      "accounts_mentioned": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "Optional account names referenced in the request (metadata only)."
-      },
-      "rbac_context": {
-        "type": "object",
-        "description": "Optional RBAC context (e.g., user email)."
+        "description": "T-SQL SELECT statement to execute. Use natural language values for low-cardinality columns (e.g., 'closed won', 'negotiation') - the MCP will automatically match them to exact database values."
       },
       "limit": {
         "type": "integer",
-        "description": "Optional row cap; if provided and query lacks TOP, enforce using TOP <limit>.",
+        "description": "Maximum number of rows to return.",
         "default": 100
       }
     },

@@ -58,6 +58,14 @@ class RBACSettings(BaseSettings):
         default_factory=lambda: get_nested_config('rbac.enabled', False),
         description="Enable Azure RBAC integration"
     )
+    check_role: bool = Field(
+        default_factory=lambda: get_nested_config('rbac.check_role', False),
+        description="Enable role checking for MCP access"
+    )
+    required_role: str = Field(
+        default_factory=lambda: get_nested_config('rbac.required_role', 'mcp:READ'),
+        description="Required role for MCP access (e.g., mcp:READ, mcp:WRITE)"
+    )
     enforcement_mode: str = Field(
         default_factory=lambda: get_nested_config('rbac.enforcement_mode', 'soft'),
         description="Enforcement mode: soft (log) or hard (block)"

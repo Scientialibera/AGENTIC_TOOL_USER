@@ -1,0 +1,76 @@
+# Unified Configuration for Text-to-SQL Agent
+# Copy this file to config.toml and fill in your Azure resource details
+
+[framework]
+dev_mode = false  # Set to true for local development (skips auth, uses mock data)
+bypass_token = false  # Set to true to bypass JWT token validation
+debug = false  # Enable verbose logging
+environment = "production"  # production | development | staging
+app_name = "Text-to-SQL Agent"
+log_level = "INFO"  # DEBUG | INFO | WARNING | ERROR
+
+# Azure RBAC Configuration
+[rbac]
+enabled = false  # Toggle Azure RBAC integration
+check_role = false  # Set to true to enforce role-based access (requires role in config)
+required_role = "mcp:READ"  # Required role if check_role is true
+enforcement_mode = "soft"  # soft|hard - soft logs violations, hard blocks requests
+row_level_security = true  # Enable row-level security filtering
+enable_column_filtering = true  # Enable column-level access control
+
+# Azure AD Authentication
+[azure.auth]
+tenant_id = "your-azure-tenant-id"  # Azure AD tenant ID for JWT validation
+audience = "https://cognitiveservices.azure.com"  # Expected audience in JWT tokens
+
+# Azure OpenAI Configuration
+[azure.openai]
+endpoint = "https://your-openai-resource.openai.azure.com/"
+chat_deployment = "gpt-4o"  # Your chat model deployment name
+embedding_deployment = "text-embedding-ada-002"  # Your embedding model deployment name
+api_version = "2024-06-01"
+embedding_dimensions = 1536
+requests_per_minute = 60
+
+# Cosmos DB Configuration
+[azure.cosmos]
+endpoint = "https://your-cosmos-account.documents.azure.com:443/"
+database = "appdb"
+
+[azure.cosmos.containers]
+chat = "unified_data"
+prompts = "prompts"
+sql_schema = "sql_schema"
+table_metadata = "table_metadata"  # Rich table/column descriptions with embeddings
+value_mappings = "value_mappings"  # Low-cardinality value catalog
+agent_functions = "agent_functions"
+rbac_policies = "rbac_policies"  # RBAC policy definitions
+
+# Azure SQL Configuration (active backend for queries)
+[azure.sql]
+enabled = true
+server = "your-sql-server.database.windows.net"  # Azure SQL server FQDN
+database = "your-database-name"
+authentication = "azure_ad"  # azure_ad | connection_string
+token_scope = "https://database.windows.net/.default"
+driver = "ODBC Driver 18 for SQL Server"
+
+# MCP Configuration
+[mcp]
+mode = "http"
+base_port = 8000
+
+[mcp.endpoints]
+sql_mcp = "http://localhost:8003/mcp"  # SQL MCP server endpoint
+
+# Text-to-SQL Configuration
+[text_to_sql]
+enable_embeddings = true  # Use embeddings for table discovery
+enable_value_matching = true  # Fuzzy match low-cardinality values
+enable_table_discovery = true  # Auto-discover relevant tables
+similarity_threshold = 0.75  # Embedding similarity threshold for table matching
+max_tables_per_query = 5  # Maximum tables to consider
+value_match_threshold = 0.80  # Fuzzy match threshold for values
+enable_self_healing = true  # Retry failed queries with LLM feedback
+max_retry_attempts = 3
+max_unique_values_for_low_cardinality = 50  # Threshold for low-cardinality column detection

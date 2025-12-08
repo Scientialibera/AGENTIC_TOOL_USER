@@ -31,14 +31,14 @@ from shared.auth_provider import create_auth_provider
 # ============================================================================
 # CONSTANTS
 # ============================================================================
+logger = structlog.get_logger(__name__)
+settings = get_settings()
+
 MCP_SERVER_NAME = "SQL MCP Server"
-MCP_SERVER_PORT = int(os.getenv("MCP_PORT", "8003"))  # Server port (from env or default 8003)
-PROMPT_ID = "sql_agent_system"  # Legacy (no longer used for query generation)
+MCP_SERVER_PORT = settings.mcp.base_port + 3  # SQL MCP on base_port + 3 (default 8003)
 AGENT_TYPE = "sql"  # Used to match function patterns like sql_*_function
-SQL_SCHEMA_CONTAINER = "sql_schema"  # Container name for SQL schema metadata
-DEFAULT_QUERY_LIMIT = 100
-MAX_RETRY_ATTEMPTS = int(os.getenv("MCP_MAX_RETRIES", "3"))  # Self-healing retry attempts
-DEFAULT_SYSTEM_PROMPT = ""  # No internal LLM prompt; the caller must send valid T-SQL directly.
+DEFAULT_QUERY_LIMIT = 100  # Default row limit for queries
+MAX_RETRY_ATTEMPTS = settings.text_to_sql.max_retry_attempts  # Self-healing retry attempts
 
 # ============================================================================
 # MAGIC VARIABLES (centralized configuration)
@@ -46,10 +46,6 @@ DEFAULT_SYSTEM_PROMPT = ""  # No internal LLM prompt; the caller must send valid
 TRANSPORT = "http"
 HOST = "0.0.0.0"
 SOURCE_NAME = "sql_mcp"
-
-logger = structlog.get_logger(__name__)
-
-settings = get_settings()
 
 # Initialize auth provider (None in dev mode, JWTVerifier in production)
 auth_provider = create_auth_provider()
@@ -663,24 +659,21 @@ def _build_value_hints(max_items: int = 5, max_values: int = 6) -> List[str]:
 @mcp.tool()
 async def sql_query(
     query: str,
-    value_mappings: Optional[List[Dict[str, str]]] = None,
-    accounts_mentioned: Optional[List[str]] = None,
-    rbac_context: Optional[Dict[str, Any]] = None,
     limit: int = DEFAULT_QUERY_LIMIT,
     request: Optional[Any] = None
 ) -> Dict[str, Any]:
     """
-    Execute caller-provided T-SQL against Azure SQL.
+    Execute T-SQL SELECT query against Azure SQL with automatic value matching.
+
+    The MCP automatically corrects casing for low-cardinality column values by matching
+    them against the value_mappings cache in Cosmos DB. For example, 'closed won' will
+    be automatically corrected to 'Closed Won' before query execution.
 
     Args:
-        query: T-SQL statement (SELECT-only). Use TOP instead of LIMIT. Bracket reserved identifiers.
-        value_mappings: Optional list of value mappings for low-cardinality columns.
-                       Each mapping contains: table, column, user_value, matched_value.
-                       The server will replace user_value with matched_value in the query.
-        accounts_mentioned: List of account names mentioned in query
-        rbac_context: User RBAC context for row-level security
+        query: T-SQL SELECT statement. Use natural language values - they will be auto-corrected.
+               Use TOP instead of LIMIT. Bracket reserved identifiers (e.g., [Case]).
         limit: Maximum number of rows to return
-        request: FastAPI Request object (injected by FastMCP)
+        request: FastAPI Request object (injected by FastMCP for authentication)
 
     Returns:
         Dictionary with query results, including success status, data, and metadata
@@ -707,7 +700,7 @@ async def sql_query(
     try:
         await initialize_clients()
 
-        logger.info("SQL TOOL START", query=query[:200], accounts_mentioned=accounts_mentioned, value_mappings=value_mappings)
+        logger.info("SQL QUERY RECEIVED", query=query[:200], limit=limit)
 
         # Basic safety: only allow SELECT queries
         if not query.strip().lower().startswith("select"):
@@ -717,36 +710,50 @@ async def sql_query(
                 "query": query,
             }
 
-        # Apply value mappings if provided
+        # Automatically apply value matching using cached value_mappings from Cosmos
         sql_to_run = query
-        if value_mappings:
-            logger.info("Applying value mappings", mapping_count=len(value_mappings))
-            for mapping in value_mappings:
-                user_val = mapping.get("user_value", "")
-                matched_val = mapping.get("matched_value", "")
-                table = mapping.get("table", "")
-                column = mapping.get("column", "")
+        if settings.text_to_sql.enable_value_matching and _value_mappings_cache:
+            logger.info("Auto-matching values from cache", cached_mappings=len(_value_mappings_cache))
 
-                if user_val and matched_val:
-                    # Replace user value with matched value in the query
-                    # Try both quoted and unquoted variants
-                    replacements = [
-                        (f"'{user_val}'", f"'{matched_val}'"),
-                        (f'"{user_val}"', f'"{matched_val}"'),
-                        (user_val, matched_val),
+            for value_map_item in _value_mappings_cache:
+                table = value_map_item.get("table", "")
+                column = value_map_item.get("column", "")
+                values = value_map_item.get("values", [])
+
+                for value_obj in values:
+                    db_value = value_obj.get("value", "")
+                    if not db_value:
+                        continue
+
+                    # Try matching lowercase and mixed case variants
+                    user_variants = [
+                        db_value.lower(),
+                        db_value.title(),
+                        db_value,
                     ]
 
-                    for old, new in replacements:
-                        if old in sql_to_run:
-                            sql_to_run = sql_to_run.replace(old, new)
-                            logger.info(
-                                "Applied value mapping",
-                                table=table,
-                                column=column,
-                                user_value=user_val,
-                                matched_value=matched_val,
-                            )
-                            break
+                    for user_val in user_variants:
+                        if user_val == db_value:
+                            continue  # Skip if already exact match
+
+                        # Replace user value with exact database value
+                        replacements = [
+                            (f"'{user_val}'", f"'{db_value}'"),
+                            (f'"{user_val}"', f'"{db_value}"'),
+                        ]
+
+                        for old, new in replacements:
+                            if old in sql_to_run:
+                                sql_to_run = sql_to_run.replace(old, new)
+                                logger.info(
+                                    "Auto-corrected value",
+                                    table=table,
+                                    column=column,
+                                    user_value=user_val,
+                                    db_value=db_value,
+                                )
+        else:
+            logger.debug("Value matching disabled or no mappings cached")
 
         # Enforce TOP if user provided a limit and no TOP is present
         if limit and " top " not in sql_to_run.lower() and "top(" not in sql_to_run.lower():
@@ -779,15 +786,14 @@ async def sql_query(
             raise Exception(f"SQL execution failed after {MAX_RETRY_ATTEMPTS} attempts: {last_error}")
 
         total_elapsed = int((time.time() - start_time) * 1000)
-        logger.info("SQL TOOL COMPLETE", row_count=len(results), total_duration_ms=total_elapsed)
+        logger.info("SQL QUERY SUCCESS", row_count=len(results), duration_ms=total_elapsed)
 
         return {
             "success": True,
             "query": sql_to_run,
             "row_count": len(results),
             "data": results,
-            "source": "fabric_sql" if not settings.dev_mode else "dummy_sql",
-            "accounts_mentioned": accounts_mentioned,
+            "source": "azure_sql" if not settings.dev_mode else "mock_sql",
         }
 
     except RetryError as e:
@@ -1070,8 +1076,36 @@ def _get_dummy_sql_data(query: str, limit: int = 100) -> List[Dict[str, Any]]:
 
 if __name__ == "__main__":
     import os
-    
-    logger.info(f"Starting {MCP_SERVER_NAME} on {HOST}:{MCP_SERVER_PORT}")
-    
+
+    logger.info("=" * 80)
+    logger.info(f"{MCP_SERVER_NAME} STARTING")
+    logger.info("=" * 80)
+    logger.info("Server Configuration",
+                host=HOST,
+                port=MCP_SERVER_PORT,
+                transport=TRANSPORT)
+    logger.info("Authentication",
+                auth_enabled=not settings.bypass_token,
+                tenant_id=settings.azure_tenant_id if settings.azure_tenant_id else "N/A")
+    logger.info("RBAC Configuration",
+                rbac_enabled=settings.rbac.enabled,
+                check_role=settings.rbac.check_role,
+                required_role=settings.rbac.required_role if settings.rbac.check_role else "N/A",
+                enforcement_mode=settings.rbac.enforcement_mode)
+    logger.info("Text-to-SQL Features",
+                auto_value_matching=settings.text_to_sql.enable_value_matching,
+                table_discovery=settings.text_to_sql.enable_table_discovery,
+                embeddings=settings.text_to_sql.enable_embeddings)
+    logger.info("Available Tools",
+                tool_count=4,
+                tools=["sql_query", "list_tables", "list_columns", "get_schema"])
+    logger.info("Database Connection",
+                azure_sql_enabled=settings.azure_sql.enabled,
+                server=settings.azure_sql.server if settings.azure_sql.enabled else "N/A",
+                database=settings.azure_sql.database if settings.azure_sql.enabled else "N/A")
+    logger.info("=" * 80)
+    logger.info(f"{MCP_SERVER_NAME} READY - Listening on {HOST}:{MCP_SERVER_PORT}")
+    logger.info("=" * 80)
+
     # Run the MCP server with explicit port configuration
     mcp.run(transport=TRANSPORT, port=MCP_SERVER_PORT, host=HOST)
