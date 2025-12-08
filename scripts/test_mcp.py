@@ -45,7 +45,9 @@ async def test_mcp():
             if data.get('data'):
                 print("Results:")
                 for i, row in enumerate(data['data'][:3], 1):
-                    print(f"  {i}. {row.get('Name')} - {row.get('StageName')} - ${row.get('Amount', 0):,.0f}")
+                    amount = row.get('Amount', 0)
+                    amount_str = f"${float(amount):,.0f}" if amount else "$0"
+                    print(f"  {i}. {row.get('Name')} - {row.get('StageName')} - {amount_str}")
         print()
 
         print("="*80)
