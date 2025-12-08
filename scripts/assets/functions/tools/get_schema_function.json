@@ -1,0 +1,25 @@
+{
+  "id": "get_schema_function",
+  "agent_type": "sql",
+  "function_name": "get_schema",
+  "name": "get_schema",
+  "description": "Return full schema text plus table/column map",
+  "parameters": {
+    "type": "object",
+    "properties": {}
+  },
+  "return_type": {
+    "type": "object",
+    "properties": {
+      "success": {"type": "boolean"},
+      "schema": {"type": "string"},
+      "tables": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  }
+}

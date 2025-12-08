@@ -1,0 +1,58 @@
+{
+  "id": "sql_query_function",
+  "agent_type": "sql",
+  "function_name": "sql_query",
+  "name": "sql_query",
+  "description": "Execute a caller-provided SELECT T-SQL statement against Azure SQL. Use TOP instead of LIMIT and bracket reserved identifiers (e.g., [Case]). No SQL generation is performed.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "T-SQL statement to execute (SELECT-only)."
+      },
+      "value_mappings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "table": {"type": "string"},
+            "column": {"type": "string"},
+            "user_value": {"type": "string"},
+            "matched_value": {"type": "string"}
+          },
+          "required": ["table", "column", "user_value", "matched_value"]
+        },
+        "description": "Optional array of value mappings for low-cardinality columns. Each mapping resolves a user-provided value to its exact database value. The MCP server will automatically replace user_value with matched_value in the query before execution."
+      },
+      "accounts_mentioned": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Optional account names referenced in the request (metadata only)."
+      },
+      "rbac_context": {
+        "type": "object",
+        "description": "Optional RBAC context (e.g., user email)."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Optional row cap; if provided and query lacks TOP, enforce using TOP <limit>.",
+        "default": 100
+      }
+    },
+    "required": ["query"]
+  },
+  "return_type": {
+    "type": "object",
+    "properties": {
+      "success": {"type": "boolean"},
+      "query": {"type": "string"},
+      "row_count": {"type": "integer"},
+      "data": {
+        "type": "array",
+        "items": {"type": "object"}
+      },
+      "error": {"type": "string"}
+    }
+  }
+}

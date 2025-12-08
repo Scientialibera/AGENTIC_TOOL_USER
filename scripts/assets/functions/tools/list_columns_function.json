@@ -1,0 +1,28 @@
+{
+  "id": "list_columns_function",
+  "agent_type": "sql",
+  "function_name": "list_columns",
+  "name": "list_columns",
+  "description": "List columns for a given table name using schema metadata",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "table": {
+        "type": "string",
+        "description": "Table name to describe"
+      }
+    },
+    "required": ["table"]
+  },
+  "return_type": {
+    "type": "object",
+    "properties": {
+      "success": {"type": "boolean"},
+      "table": {"type": "string"},
+      "columns": {
+        "type": "array",
+        "items": {"type": "string"}
+      }
+    }
+  }
+}

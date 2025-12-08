@@ -1,0 +1,21 @@
+{
+  "id": "list_tables_function",
+  "agent_type": "sql",
+  "function_name": "list_tables",
+  "name": "list_tables",
+  "description": "List available tables from cached schema metadata",
+  "parameters": {
+    "type": "object",
+    "properties": {}
+  },
+  "return_type": {
+    "type": "object",
+    "properties": {
+      "success": {"type": "boolean"},
+      "tables": {
+        "type": "array",
+        "items": {"type": "string"}
+      }
+    }
+  }
+}

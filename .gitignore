@@ -16,3 +16,33 @@ __pycache__/
 dist/
 build/
 deploy.log
+
+# Logs
+*.log
+*.err.log
+*.out.log
+scripts/*.log
+agentic_framework/*.log
+
+# Test files (temporary)
+*_test.py
+scripts/tmp_*.py
+scripts/test_value_mappings*.py
+scripts/query_actual_schema.py
+scripts/get_low_cardinality_values.py
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Local config
+.claude/settings.local.json
+config.toml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
